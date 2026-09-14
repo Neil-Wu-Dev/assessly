@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: assessly-backend
+  datasource:
+    url: jdbc:postgresql://${ASSESSLY_DB_HOST:localhost}:${ASSESSLY_DB_PORT:5432}/${ASSESSLY_DB_NAME:assessly}
+    username: ${ASSESSLY_DB_USER:postgres}
+    password: ${ASSESSLY_DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: ${ASSESSLY_BACKEND_PORT:8080}
+
+assessly:
+  deepseek:
+    base-url: ${ASSESSLY_DEEPSEEK_BASE_URL:https://api.deepseek.com}
+    model: ${ASSESSLY_DEEPSEEK_MODEL:deepseek-v4-flash}
+  api-session-ttl-minutes: ${ASSESSLY_API_SESSION_TTL_MINUTES:180}
