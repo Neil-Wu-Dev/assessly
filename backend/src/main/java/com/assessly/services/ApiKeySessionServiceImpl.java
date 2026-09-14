@@ -7,6 +7,7 @@ import com.assessly.repositories.interfaces.AiProviderSettingsRepository;
 import com.assessly.services.interfaces.ApiKeySessionService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.ResourceAccessException;
@@ -22,7 +23,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ApiKeySessionServiceImpl implements ApiKeySessionService {
     private final AppProperties properties;
     private final AiProviderSettingsRepository settingsRepository;
-    private final RestClient restClient = RestClient.create();
     private final Map<UUID, SecretSession> sessions = new ConcurrentHashMap<>();
 
     public ApiKeySessionServiceImpl(AppProperties properties, AiProviderSettingsRepository settingsRepository) {
@@ -64,6 +64,10 @@ public class ApiKeySessionServiceImpl implements ApiKeySessionService {
 
     private void validate(AiProviderSettings settings, String apiKey) {
         try {
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+            requestFactory.setConnectTimeout(Duration.ofSeconds(10));
+            requestFactory.setReadTimeout(Duration.ofSeconds(30));
+            RestClient restClient = RestClient.builder().requestFactory(requestFactory).build();
             restClient.post()
                     .uri(settings.getBaseUrl() + "/chat/completions")
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)

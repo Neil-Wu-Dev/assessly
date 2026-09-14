@@ -45,9 +45,13 @@ public class EvidenceParser {
     }
 
     private ParsedEvidence parseCsv(MultipartFile file) throws Exception {
-        var records = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build()
+        List<Map<String, Object>> records = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).build()
                 .parse(new InputStreamReader(file.getInputStream()))
-                .stream().map(r -> new LinkedHashMap<String, Object>(r.toMap())).toList();
+                .stream().map(r -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.putAll(r.toMap());
+                    return row;
+                }).toList();
         return structured(EvidenceFormat.CSV, records, Map.of("parser", "commons-csv"));
     }
 
@@ -139,3 +143,4 @@ public class EvidenceParser {
         };
     }
 }
+
