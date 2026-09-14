@@ -33,15 +33,15 @@ public class AuthController {
         return mapper.toResponse(user, auth.createSession(user));
     }
 
-    @PostMapping("/deepseek")
-    ApiSessionResponse connectDeepseek(@RequestHeader("X-Assessly-Session") String token, @Valid @RequestBody ApiKeyRequest request) {
-        var session = apiKeys.connect(auth.requireUser(token).getId(), request.apiKey());
-        return new ApiSessionResponse(session.status(), session.expiresAt(), session.remainingSeconds(), session.message());
+    @PostMapping("/ai-session")
+    ApiSessionResponse connectAiProvider(@RequestHeader("X-Assessly-Session") String token, @Valid @RequestBody ApiKeyRequest request) {
+        var session = apiKeys.connect(auth.requireUser(token).getId(), request.providerName(), request.baseUrl(), request.modelName(), request.apiKey());
+        return new ApiSessionResponse(session.status(), session.providerName(), session.baseUrl(), session.modelName(), session.expiresAt(), session.remainingSeconds(), session.message());
     }
 
-    @GetMapping("/deepseek")
-    ApiSessionResponse deepseekStatus(@RequestHeader("X-Assessly-Session") String token) {
+    @GetMapping("/ai-session")
+    ApiSessionResponse aiProviderStatus(@RequestHeader("X-Assessly-Session") String token) {
         var session = apiKeys.status(auth.requireUser(token).getId());
-        return new ApiSessionResponse(session.status(), session.expiresAt(), session.remainingSeconds(), session.message());
+        return new ApiSessionResponse(session.status(), session.providerName(), session.baseUrl(), session.modelName(), session.expiresAt(), session.remainingSeconds(), session.message());
     }
 }

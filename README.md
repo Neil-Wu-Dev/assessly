@@ -8,6 +8,7 @@ The core boundary is intentional:
 - The Java Rule Engine performs deterministic PASS/FAIL assessment from confirmed rules and structured evidence.
 - Evidence parsing is deterministic and only accepts data that can become column/value rows.
 - Rule results remain traceable to Machine Rule and original Security Control text.
+- BYOK is provider-neutral: users enter provider name, base URL, model name, and API key in the web UI. Only provider name/base URL/model are stored per user; API keys are never stored in the database and only live in a 3-hour server memory session.
 
 ## Structure
 
@@ -19,62 +20,110 @@ assessly/
 └── database-init.sql
 ```
 
+## Local IntelliJ Backend Configuration
+
+For normal IntelliJ development, edit this local file directly:
+
+```text
+D:\dev\assessly\backend\src\main\resources\application-local.yml
+```
+
+It is intentionally ignored by Git because it can contain your local PostgreSQL password.
+
+Example:
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/assessly
+    username: postgres
+    password: your-local-postgres-password
+
+assessly:
+  api-session-ttl-minutes: 180
+```
+
+`application.yml` imports `application-local.yml` automatically, so you do not need to type environment variables in a terminal when running from IntelliJ.
+
+`.env.example` is only a reference for command-line or deployment-style configuration. It is not required for IntelliJ local development.
+
 ## Local Database
 
 PostgreSQL and pgvector are expected to be installed already.
 
-Create the local database:
+Create the local database once:
 
 ```powershell
 psql -h localhost -p 5432 -U postgres -f database-init.sql
-```
-
-Runtime database credentials are injected through environment variables. Do not commit secrets.
-
-```powershell
-$env:ASSESSLY_DB_NAME="assessly"
-$env:ASSESSLY_DB_HOST="localhost"
-$env:ASSESSLY_DB_PORT="5432"
-$env:ASSESSLY_DB_USER="postgres"
-$env:ASSESSLY_DB_PASSWORD="your-local-password"
 ```
 
 Flyway migrations enable and use `vector` in the Assessly database.
 
 ## Backend
 
-```powershell
-cd backend
-.\gradlew.bat bootRun
+Open this folder in IntelliJ:
+
+```text
+D:\dev\assessly\backend
 ```
 
-Important API boundaries:
+Then run:
 
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/auth/deepseek`
-- `GET /api/v1/auth/deepseek`
-- `POST /api/v1/datasets`
-- `POST /api/v1/datasets/{datasetId}/evidence`
-- `POST /api/v1/datasets/{datasetId}/controls`
-- `POST /api/v1/datasets/{datasetId}/rules/generate`
-- `POST /api/v1/datasets/{datasetId}/rules/manual`
-- `POST /api/v1/datasets/{datasetId}/assessments`
+```text
+src/main/java/com/assessly/AssesslyBackendApplication.java
+```
+
+The backend defaults to:
+
+```text
+http://localhost:8080
+```
 
 ## Frontend
 
+Open this folder in VS Code:
+
+```text
+D:\dev\assessly\frontend
+```
+
+Run:
+
 ```powershell
-cd frontend
 npm install
 npm run dev
 ```
 
-The UI defaults to `http://localhost:8080/api/v1`.
-Override with:
+The UI defaults to `http://localhost:8080/api/v1` for the backend.
 
-```powershell
-$env:VITE_API_BASE_URL="http://localhost:8080/api/v1"
+## AI Provider BYOK
+
+Assessly does not hardcode a specific AI provider.
+
+Users enter these values in the web UI:
+
+- Provider name
+- Provider base URL
+- Model name
+- API key
+
+The backend validates the key against:
+
+```text
+{baseUrl}/chat/completions
 ```
+
+This expects an OpenAI-compatible chat completions API. Provider adapters can be added later for non-compatible APIs without storing user API keys.
+
+Stored in PostgreSQL per user:
+
+- Provider name
+- Base URL
+- Model name
+
+Never stored in PostgreSQL:
+
+- API key
 
 ## Rule AST
 
@@ -110,3 +159,4 @@ Example:
   ]
 }
 ```
+
