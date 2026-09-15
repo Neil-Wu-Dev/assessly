@@ -83,8 +83,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   font-weight: 700;
 }
 .mode-switch button.active, .nav-tabs button.active {
-  color: var(--text);
-  background: var(--surface);
+  color: #fff;
+  background: var(--primary);
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
 }
 
@@ -121,7 +121,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--primary); box-sh
   z-index: 20;
   min-height: 64px;
   display: grid;
-  grid-template-columns: 250px minmax(0, 1fr) auto;
+  grid-template-columns: 250px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 18px;
   padding: 0 18px;
@@ -134,6 +134,24 @@ input:focus, textarea:focus, select:focus { border-color: var(--primary); box-sh
 .nav-tabs { display: flex; align-items: center; gap: 6px; overflow-x: auto; min-width: 0; }
 .nav-tabs button { white-space: nowrap; }
 .nav-tabs button:hover, .text-button:hover { color: var(--text); background: #edf1f6; }
+.current-page {
+  display: grid;
+  gap: 2px;
+  min-width: 138px;
+  padding: 8px 12px;
+  border-left: 1px solid var(--line);
+}
+.current-page span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.current-page strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.2;
+}
 .top-actions { justify-content: flex-end; }
 
 .backend-badge {
@@ -290,6 +308,7 @@ th { position: sticky; top: 0; background: #eef2f7; color: #475467; font-weight:
 
 @media (max-width: 1160px) {
   .top-bar { grid-template-columns: 1fr; gap: 12px; padding: 12px; }
+  .current-page { border-left: 0; padding: 0; }
   .top-actions { justify-content: space-between; }
   .split, .rule-layout, .benchmark-grid, .form-grid { grid-template-columns: 1fr; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
