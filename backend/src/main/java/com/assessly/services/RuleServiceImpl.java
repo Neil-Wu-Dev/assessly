@@ -2,6 +2,7 @@ package com.assessly.services;
 
 import com.assessly.defs.RuleGenerationStatus;
 import com.assessly.exceptions.AuthenticationException;
+import com.assessly.exceptions.NotFoundException;
 import com.assessly.exceptions.RuleValidationException;
 import com.assessly.models.ControlDocument;
 import com.assessly.models.EvidenceFile;
@@ -17,7 +18,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -103,10 +107,23 @@ public class RuleServiceImpl implements RuleService {
         }
     }
 
+    public RuleSet get(UUID ownerId, UUID datasetId, UUID ruleSetId) {
+        datasets.get(ownerId, datasetId);
+        return ruleSets.findByIdAndDataset(ruleSetId, datasetId).orElseThrow(() -> new NotFoundException("Rule Set not found."));
+    }
+
+    public RuleSet update(UUID ownerId, UUID datasetId, UUID ruleSetId, String rulesJson, String summaryJson) {
+        RuleSet existing = get(ownerId, datasetId, ruleSetId);
+        if (existing.getConfirmedAt() != null) {
+            throw new RuleValidationException("Confirmed Rule Sets are immutable. Save a new manual Rule Set instead.");
+        }
+        return saveManual(ownerId, datasetId, rulesJson, summaryJson);
+    }
+
     public RuleSet confirm(UUID ownerId, UUID datasetId, UUID ruleSetId) {
         datasets.get(ownerId, datasetId);
         EvidenceFile latestEvidence = latestEvidence(datasetId);
-        RuleSet ruleSet = ruleSets.findByIdAndDataset(ruleSetId, datasetId).orElseThrow();
+        RuleSet ruleSet = get(ownerId, datasetId, ruleSetId);
         ruleEngine.validateRuleSet(ruleSet.getRulesJson());
         ruleEngine.validateFields(ruleSet.getRulesJson(), fieldsFromColumns(latestEvidence.getColumnsJson()));
         ruleSet.confirmExecutable();

@@ -64,6 +64,10 @@ public class ApiKeySessionServiceImpl implements ApiKeySessionService {
         return sessions.get(userId).apiKey();
     }
 
+    public void disconnect(UUID userId) {
+        sessions.remove(userId);
+    }
+
     public String chatCompletion(UUID userId, List<Map<String, String>> messages) {
         requireApiKey(userId);
         SecretSession session = sessions.get(userId);

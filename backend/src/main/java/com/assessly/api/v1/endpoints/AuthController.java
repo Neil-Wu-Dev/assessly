@@ -33,6 +33,11 @@ public class AuthController {
         return mapper.toResponse(user, auth.createSession(user));
     }
 
+    @PostMapping("/logout")
+    void logout(@RequestHeader("X-Assessly-Session") String token) {
+        auth.logout(token);
+    }
+
     @PostMapping("/ai-session")
     ApiSessionResponse connectAiProvider(@RequestHeader("X-Assessly-Session") String token, @Valid @RequestBody ApiKeyRequest request) {
         var session = apiKeys.connect(auth.requireUser(token).getId(), request.providerName(), request.baseUrl(), request.modelName(), request.apiKey());
@@ -42,6 +47,14 @@ public class AuthController {
     @GetMapping("/ai-session")
     ApiSessionResponse aiProviderStatus(@RequestHeader("X-Assessly-Session") String token) {
         var session = apiKeys.status(auth.requireUser(token).getId());
+        return new ApiSessionResponse(session.status(), session.providerName(), session.baseUrl(), session.modelName(), session.expiresAt(), session.remainingSeconds(), session.message());
+    }
+
+    @DeleteMapping("/ai-session")
+    ApiSessionResponse disconnectAiProvider(@RequestHeader("X-Assessly-Session") String token) {
+        var user = auth.requireUser(token);
+        apiKeys.disconnect(user.getId());
+        var session = apiKeys.status(user.getId());
         return new ApiSessionResponse(session.status(), session.providerName(), session.baseUrl(), session.modelName(), session.expiresAt(), session.remainingSeconds(), session.message());
     }
 }

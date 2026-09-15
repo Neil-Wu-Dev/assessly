@@ -1,6 +1,10 @@
 package com.assessly.services;
 
+import com.assessly.exceptions.NotFoundException;
+import com.assessly.models.BenchmarkCase;
 import com.assessly.models.BenchmarkResult;
+import com.assessly.models.BenchmarkRun;
+import com.assessly.repositories.interfaces.BenchmarkRepository;
 import com.assessly.services.interfaces.ApiKeySessionService;
 import com.assessly.services.interfaces.BenchmarkService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -8,31 +12,99 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
-import java.util.UUID;
 
 @Service
 public class BenchmarkServiceImpl implements BenchmarkService {
     private final RuleEngine ruleEngine;
     private final ApiKeySessionService apiKeys;
+    private final BenchmarkRepository benchmarks;
 
-    public BenchmarkServiceImpl(RuleEngine ruleEngine, ApiKeySessionService apiKeys) {
+    public BenchmarkServiceImpl(RuleEngine ruleEngine, ApiKeySessionService apiKeys, BenchmarkRepository benchmarks) {
         this.ruleEngine = ruleEngine;
         this.apiKeys = apiKeys;
+        this.benchmarks = benchmarks;
     }
 
     @Override
-    public BenchmarkResult run(UUID userId, String controlText, String testDataJson, String groundTruthRuleJson, String expectedResultJson, String aiGeneratedRuleJson) {
+    public List<BenchmarkCase> cases(UUID userId) {
+        return benchmarks.findCasesVisibleTo(userId);
+    }
+
+    @Override
+    @Transactional
+    public BenchmarkCase createCase(UUID userId, String name, String controlText, String testDataJson, String groundTruthRuleJson, String expectedResultJson) {
+        validateCase(controlText, testDataJson, groundTruthRuleJson, expectedResultJson);
+        return benchmarks.saveCase(new BenchmarkCase(userId, name, controlText, testDataJson, groundTruthRuleJson, expectedResultJson, false));
+    }
+
+    @Override
+    public BenchmarkCase getCase(UUID userId, UUID caseId) {
+        return benchmarks.findCaseVisibleTo(caseId, userId).orElseThrow(() -> new NotFoundException("Benchmark case not found."));
+    }
+
+    @Override
+    @Transactional
+    public void deleteCase(UUID userId, UUID caseId) {
+        BenchmarkCase benchmarkCase = benchmarks.findOwnedCase(caseId, userId).orElseThrow(() -> new NotFoundException("Custom benchmark case not found."));
+        benchmarks.deleteCase(benchmarkCase);
+    }
+
+    @Override
+    @Transactional
+    public BenchmarkResult run(UUID userId, UUID benchmarkCaseId, String controlText, String testDataJson, String groundTruthRuleJson, String expectedResultJson, String aiGeneratedRuleJson) {
+        BenchmarkCase benchmarkCase = null;
+        if (benchmarkCaseId != null) {
+            benchmarkCase = getCase(userId, benchmarkCaseId);
+            controlText = benchmarkCase.getControlText();
+            testDataJson = benchmarkCase.getTestDataJson();
+            groundTruthRuleJson = benchmarkCase.getGroundTruthRuleJson();
+            expectedResultJson = benchmarkCase.getExpectedResultJson();
+        }
+        BenchmarkResult result = execute(controlText, testDataJson, groundTruthRuleJson, expectedResultJson, aiGeneratedRuleJson, userId);
+        benchmarks.saveRun(new BenchmarkRun(
+                userId,
+                benchmarkCase == null ? null : benchmarkCase.getId(),
+                controlText,
+                testDataJson,
+                groundTruthRuleJson,
+                expectedResultJson,
+                result
+        ));
+        return result;
+    }
+
+    @Override
+    public List<BenchmarkRun> runs(UUID userId) {
+        return benchmarks.findRuns(userId);
+    }
+
+    @Override
+    public BenchmarkRun getRun(UUID userId, UUID runId) {
+        return benchmarks.findRun(runId, userId).orElseThrow(() -> new NotFoundException("Benchmark run not found."));
+    }
+
+    private void validateCase(String controlText, String testDataJson, String groundTruthRuleJson, String expectedResultJson) {
+        if (controlText == null || controlText.isBlank()) throw new IllegalArgumentException("Control text is required.");
         List<Map<String, Object>> rows = parseRows(testDataJson);
-        Set<String> fields = rows.isEmpty() ? Set.of() : rows.get(0).keySet();
+        if (rows.isEmpty()) throw new IllegalArgumentException("Benchmark test data must include at least one structured row.");
+        Set<String> fields = rows.get(0).keySet();
+        ruleEngine.validateRuleSet(groundTruthRuleJson);
+        ruleEngine.validateFields(groundTruthRuleJson, fields);
+        if (expectedResultJson != null && !expectedResultJson.isBlank()) JsonSupport.readTree(expectedResultJson);
+    }
+
+    private BenchmarkResult execute(String controlText, String testDataJson, String groundTruthRuleJson, String expectedResultJson, String aiGeneratedRuleJson, UUID userId) {
+        validateCase(controlText, testDataJson, groundTruthRuleJson, expectedResultJson);
+        List<Map<String, Object>> rows = parseRows(testDataJson);
+        Set<String> fields = rows.get(0).keySet();
         String generatedRule = aiGeneratedRuleJson == null || aiGeneratedRuleJson.isBlank()
                 ? generateRuleWithAi(userId, controlText, fields, testDataJson)
                 : aiGeneratedRuleJson;
 
-        ruleEngine.validateRuleSet(groundTruthRuleJson);
         ruleEngine.validateRuleSet(generatedRule);
-        ruleEngine.validateFields(groundTruthRuleJson, fields);
         ruleEngine.validateFields(generatedRule, fields);
 
         Map<String, Object> generatedExecution = ruleEngine.evaluate(generatedRule, rows);
@@ -45,8 +117,6 @@ public class BenchmarkServiceImpl implements BenchmarkService {
         List<Map<String, Object>> differences = new ArrayList<>();
         if (!structural) differences.add(Map.of("type", "AST_STRUCTURAL_DIFFERENCE", "message", "Generated rule AST is not structurally equivalent to the human ground-truth rule."));
         if (!execution) differences.add(Map.of("type", "EXECUTION_RESULT_DIFFERENCE", "message", "Generated rule execution result differs from the expected assessment result."));
-        if (controlText == null || controlText.isBlank()) differences.add(Map.of("type", "MISSING_CONTROL_TEXT", "message", "Control text is required for traceability."));
-
         return new BenchmarkResult(structural, execution, generatedRule, JsonSupport.write(generatedExecution), JsonSupport.write(groundTruthExecution), differences);
     }
 
@@ -58,11 +128,6 @@ public class BenchmarkServiceImpl implements BenchmarkService {
         String json = extractJson(content);
         JsonNode root = JsonSupport.readTree(json);
         if (root.has("rules")) return JsonSupport.write(root);
-        if (root.has("status") && root.has("rules")) {
-            ObjectNode normalized = JsonSupport.MAPPER.createObjectNode();
-            normalized.set("rules", root.get("rules"));
-            return JsonSupport.write(normalized);
-        }
         throw new IllegalArgumentException("AI benchmark response did not include a rules array.");
     }
 

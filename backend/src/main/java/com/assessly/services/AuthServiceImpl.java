@@ -48,4 +48,8 @@ public class AuthServiceImpl implements AuthService {
         sessions.put(token, user.getId());
         return token;
     }
+
+    public void logout(String sessionToken) {
+        sessions.remove(sessionToken);
+    }
 }

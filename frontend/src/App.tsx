@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import './App.css'
 
@@ -14,7 +14,9 @@ type Assessment = { id: string; datasetId: string; ruleSetId: string; evidenceFi
 type Detail = { dataset: Dataset; evidenceFiles: Evidence[]; controlDocuments: Control[]; ruleSets: RuleSet[]; assessmentRuns: Assessment[] }
 type ApiSession = { status: string; providerName?: string; baseUrl?: string; modelName?: string; expiresAt?: string; remainingSeconds: number; message: string }
 type BenchmarkResult = { structurallyEquivalent: boolean; executionEquivalent: boolean; totalCases: number; correctCases: number; accuracy: number; aiGeneratedRuleJson: string; generatedExecutionJson: string; groundTruthExecutionJson: string; differences: { type: string; message: string }[] }
-type BenchmarkCase = { id: string; name: string; controlText: string; testDataJson: string; groundTruthRuleJson: string; expectedResultJson: string }
+type BenchmarkCase = { id: string; name: string; controlText: string; testDataJson: string; groundTruthRuleJson: string; expectedResultJson: string; builtin: boolean; createdAt: string }
+type BenchmarkRunRecord = { id: string; benchmarkCaseId?: string; controlText: string; testDataJson: string; groundTruthRuleJson: string; expectedResultJson?: string; structurallyEquivalent: boolean; executionEquivalent: boolean; accuracy: number; aiGeneratedRuleJson: string; generatedExecutionJson: string; groundTruthExecutionJson: string; differencesJson: string; createdAt: string }
+type ControlChunk = { id: string; controlId?: string; section?: string; page?: number; chunkIndex: number; chunkText: string; parentReference: string }
 type GeneratedRule = { id?: string; fieldsUsed?: string[]; sourceControl?: { controlId?: string; text?: string }; explanation?: string; ast?: unknown }
 
 const navItems: { id: Page; label: string }[] = [
@@ -46,8 +48,11 @@ function App() {
   const [selectedRuleSetId, setSelectedRuleSetId] = useState('')
   const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null)
   const [benchmarkCases, setBenchmarkCases] = useState<BenchmarkCase[]>([])
+  const [benchmarkRuns, setBenchmarkRuns] = useState<BenchmarkRunRecord[]>([])
+  const [evidenceRows, setEvidenceRows] = useState<Record<string, unknown>[]>([])
+  const [controlChunks, setControlChunks] = useState<ControlChunk[]>([])
 
-  const rows = useMemo(() => parseJsonArray(detail?.evidenceFiles.find((file) => file.id === selectedEvidenceId)?.rowsJson ?? detail?.evidenceFiles[0]?.rowsJson).slice(0, 50), [detail, selectedEvidenceId])
+  const rows = evidenceRows
 
   useEffect(() => {
     void checkBackend()
@@ -91,6 +96,7 @@ function App() {
     try {
       const status = await request('/auth/ai-session', {}, token)
       setApiSession(status)
+      await refreshBenchmarkRuns(token)
     } catch {
       setApiSession({ status: 'DISCONNECTED', remainingSeconds: 0, message: 'AI API key is not connected.' })
     }
@@ -110,7 +116,8 @@ function App() {
     }
   }
 
-  function logout() {
+  async function logout() {
+    try { await request('/auth/logout', { method: 'POST' }) } catch { /* local logout still clears client session */ }
     localStorage.removeItem('assessly-session')
     setSessionToken('')
     setDetail(null)
@@ -139,8 +146,10 @@ function App() {
       const data: Detail = await request(`/datasets/${id}`, {}, token)
       setActiveId(id)
       setDetail(data)
-      setSelectedEvidenceId(data.evidenceFiles[0]?.id ?? '')
+      const firstEvidence = data.evidenceFiles[0]?.id ?? ''
+      setSelectedEvidenceId(firstEvidence)
       setSelectedRuleSetId(data.ruleSets.find(isExecutableRuleSet)?.id ?? '')
+      if (firstEvidence) await loadEvidenceRows(data.dataset.id, firstEvidence, token)
     } catch (error) {
       setMessage((error as Error).message)
     }
@@ -160,6 +169,20 @@ function App() {
     }
   }
 
+  async function updateDataset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!detail) return
+    const form = new FormData(event.currentTarget)
+    try {
+      await request(`/datasets/${detail.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ name: form.get('name'), description: form.get('description') }) })
+      await loadDetail(detail.dataset.id)
+      await refreshDatasets()
+      setMessage('Dataset updated')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
   async function deleteDataset(id: string) {
     try {
       await request(`/datasets/${id}`, { method: 'DELETE' })
@@ -167,6 +190,16 @@ function App() {
       setActiveId('')
       setDetail(null)
       await refreshDatasets()
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function disconnectApi() {
+    try {
+      const status = await request('/auth/ai-session', { method: 'DELETE' })
+      setApiSession(status)
+      setMessage(status.message)
     } catch (error) {
       setMessage((error as Error).message)
     }
@@ -200,12 +233,50 @@ function App() {
     }
   }
 
+  async function loadEvidenceRows(datasetId: string, evidenceId: string, token = sessionToken) {
+    try {
+      const data = await request(`/datasets/${datasetId}/evidence/${evidenceId}/rows?page=0&size=50`, {}, token)
+      setEvidenceRows(data.rows ?? [])
+    } catch (error) {
+      setEvidenceRows([])
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function selectEvidence(id: string) {
+    setSelectedEvidenceId(id)
+    if (detail) await loadEvidenceRows(detail.dataset.id, id)
+  }
+
   async function deleteEvidence(id: string) {
     if (!detail) return
     try {
       await request(`/datasets/${detail.dataset.id}/evidence/${id}`, { method: 'DELETE' })
       await loadDetail(detail.dataset.id)
       setMessage('Evidence file deleted')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function deleteControl(id: string) {
+    if (!detail) return
+    try {
+      await request(`/datasets/${detail.dataset.id}/controls/${id}`, { method: 'DELETE' })
+      setControlChunks([])
+      await loadDetail(detail.dataset.id)
+      setMessage('Control document deleted')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function loadControlChunks(id: string) {
+    if (!detail) return
+    try {
+      const chunks = await request(`/datasets/${detail.dataset.id}/controls/${id}/chunks`)
+      setControlChunks(chunks)
+      setMessage('Control chunks loaded')
     } catch (error) {
       setMessage((error as Error).message)
     }
@@ -228,6 +299,17 @@ function App() {
       await request(`/datasets/${detail.dataset.id}/rules/manual`, { method: 'POST', body: JSON.stringify({ rulesJson: manualRule }) })
       await loadDetail(detail.dataset.id)
       setMessage('Manual Rule Set saved')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function updateRuleSet(id: string) {
+    if (!detail) return
+    try {
+      await request(`/datasets/${detail.dataset.id}/rules/${id}`, { method: 'PATCH', body: JSON.stringify({ rulesJson: manualRule }) })
+      await loadDetail(detail.dataset.id)
+      setMessage('Rule Set updated as new manual version')
     } catch (error) {
       setMessage((error as Error).message)
     }
@@ -256,6 +338,15 @@ function App() {
     }
   }
 
+  async function refreshBenchmarkRuns(token = sessionToken) {
+    try {
+      const runs: BenchmarkRunRecord[] = await request('/benchmarks/runs', {}, token)
+      setBenchmarkRuns(runs)
+    } catch {
+      setBenchmarkRuns([])
+    }
+  }
+
   async function refreshBenchmarkCases(token = sessionToken) {
     try {
       const cases: BenchmarkCase[] = await request('/benchmarks/cases', {}, token)
@@ -280,7 +371,41 @@ function App() {
         }),
       })
       setBenchmarkResult(result)
+      await refreshBenchmarkRuns()
       setMessage(result.executionEquivalent ? 'Benchmark passed by execution result' : 'Benchmark found reliability differences')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function createBenchmarkCase(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    try {
+      await request('/benchmarks/cases', { method: 'POST', body: JSON.stringify({ name: form.get('name'), controlText: form.get('controlText'), testDataJson: form.get('testDataJson'), groundTruthRuleJson: form.get('groundTruthRuleJson'), expectedResultJson: form.get('expectedResultJson') }) })
+      await refreshBenchmarkCases()
+      setMessage('Custom benchmark case saved')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function deleteBenchmarkCase(id: string) {
+    try {
+      await request(`/benchmarks/cases/${id}`, { method: 'DELETE' })
+      await refreshBenchmarkCases()
+      setMessage('Custom benchmark case deleted')
+    } catch (error) {
+      setMessage((error as Error).message)
+    }
+  }
+
+  async function runSavedBenchmarkCase(id: string) {
+    try {
+      const result = await request('/benchmarks/run', { method: 'POST', body: JSON.stringify({ benchmarkCaseId: id }) })
+      setBenchmarkResult(result)
+      await refreshBenchmarkRuns()
+      setMessage(result.executionEquivalent ? 'Saved benchmark passed by execution result' : 'Saved benchmark found reliability differences')
     } catch (error) {
       setMessage((error as Error).message)
     }
@@ -305,14 +430,14 @@ function App() {
 
       <main className="page-shell">
         <div className="notice-bar"><span>{message}</span><span>{detail ? `Dataset: ${detail.dataset.name}` : 'No active dataset'}</span></div>
-        {page === 'ai' && <AiProviderPage apiSession={apiSession} connectApi={connectApi} />}
-        {page === 'datasets' && <DatasetsPage datasets={datasets} activeId={activeId} detail={detail} createDataset={createDataset} loadDetail={loadDetail} deleteDataset={deleteDataset} />}
-        {page === 'controls' && <RequireDataset detail={detail}><ControlsPage detail={detail!} upload={upload} /></RequireDataset>}
-        {page === 'evidence' && <RequireDataset detail={detail}><EvidencePage detail={detail!} rows={rows} selectedEvidenceId={selectedEvidenceId} setSelectedEvidenceId={setSelectedEvidenceId} upload={upload} deleteEvidence={deleteEvidence} /></RequireDataset>}
-        {page === 'rules' && <RequireDataset detail={detail}><RulesPage detail={detail!} apiSession={apiSession} manualRule={manualRule} setManualRule={setManualRule} generateRules={generateRules} saveManualRules={saveManualRules} confirmRuleSet={confirmRuleSet} /></RequireDataset>}
-        {page === 'assessment' && <RequireDataset detail={detail}><AssessmentPage detail={detail!} selectedEvidenceId={selectedEvidenceId} setSelectedEvidenceId={setSelectedEvidenceId} selectedRuleSetId={selectedRuleSetId} setSelectedRuleSetId={setSelectedRuleSetId} startAssessment={startAssessment} /></RequireDataset>}
+        {page === 'ai' && <AiProviderPage apiSession={apiSession} connectApi={connectApi} disconnectApi={disconnectApi} />}
+        {page === 'datasets' && <DatasetsPage datasets={datasets} activeId={activeId} detail={detail} createDataset={createDataset} updateDataset={updateDataset} loadDetail={loadDetail} deleteDataset={deleteDataset} />}
+        {page === 'controls' && <RequireDataset detail={detail}><ControlsPage detail={detail!} upload={upload} deleteControl={deleteControl} loadControlChunks={loadControlChunks} chunks={controlChunks} /></RequireDataset>}
+        {page === 'evidence' && <RequireDataset detail={detail}><EvidencePage detail={detail!} rows={rows} selectedEvidenceId={selectedEvidenceId} setSelectedEvidenceId={selectEvidence} upload={upload} deleteEvidence={deleteEvidence} /></RequireDataset>}
+        {page === 'rules' && <RequireDataset detail={detail}><RulesPage detail={detail!} apiSession={apiSession} manualRule={manualRule} setManualRule={setManualRule} generateRules={generateRules} saveManualRules={saveManualRules} confirmRuleSet={confirmRuleSet} updateRuleSet={updateRuleSet} /></RequireDataset>}
+        {page === 'assessment' && <RequireDataset detail={detail}><AssessmentPage detail={detail!} selectedEvidenceId={selectedEvidenceId} setSelectedEvidenceId={selectEvidence} selectedRuleSetId={selectedRuleSetId} setSelectedRuleSetId={setSelectedRuleSetId} startAssessment={startAssessment} /></RequireDataset>}
         {page === 'history' && <RequireDataset detail={detail}><HistoryPage runs={detail!.assessmentRuns} /></RequireDataset>}
-        {page === 'benchmark' && <BenchmarkPage cases={benchmarkCases} refreshCases={refreshBenchmarkCases} runBenchmark={runBenchmark} result={benchmarkResult} />}
+        {page === 'benchmark' && <BenchmarkPage cases={benchmarkCases} runs={benchmarkRuns} refreshCases={refreshBenchmarkCases} runBenchmark={runBenchmark} createCase={createBenchmarkCase} deleteCase={deleteBenchmarkCase} runSavedCase={runSavedBenchmarkCase} result={benchmarkResult} />}
         {page === 'api' && <ApiCoveragePage />}
       </main>
     </div>
@@ -323,23 +448,23 @@ function AuthScreen(props: { authMode: 'login' | 'register'; setAuthMode: (value
   return <main className="auth-screen"><section className="auth-panel"><div className="auth-brand"><span>A</span><div><h1>Assessly</h1><p>Controlled AI rule translation. Deterministic security assessment.</p></div></div><div className="mode-switch"><button className={props.authMode === 'login' ? 'active' : ''} onClick={() => props.setAuthMode('login')}>Login</button><button className={props.authMode === 'register' ? 'active' : ''} onClick={() => props.setAuthMode('register')}>Register</button></div><form onSubmit={props.submitAuth}><label>Email<input value={props.email} onChange={(event) => props.setEmail(event.target.value)} placeholder="name@company.com" /></label><label>Password<input type="password" value={props.password} onChange={(event) => props.setPassword(event.target.value)} placeholder="Minimum 8 characters" /></label><button className="primary">{props.authMode === 'login' ? 'Login' : 'Create account'}</button></form><footer><BackendBadge state={props.backendState} onClick={props.checkBackend} /><span>{props.message}</span></footer></section></main>
 }
 
-function AiProviderPage({ apiSession, connectApi }: { apiSession: ApiSession; connectApi: (event: FormEvent<HTMLFormElement>) => void }) {
-  return <section className="page"><PageHeader eyebrow="Page 1" title="AI Provider Registration" subtitle="Configure any OpenAI-compatible provider. API key is validated and kept only in the temporary server session." /><form className="card form-grid" onSubmit={connectApi}><label>Provider name<input name="providerName" defaultValue={apiSession.providerName ?? ''} placeholder="Provider name" /></label><label>Base URL<input name="baseUrl" defaultValue={apiSession.baseUrl ?? ''} placeholder="https://provider.example.com" /></label><label>Model name<input name="modelName" defaultValue={apiSession.modelName ?? ''} placeholder="model-name" /></label><label>API key<input name="apiKey" type="password" placeholder="Never stored in database" /></label><button className="primary">Validate and Connect</button></form><div className="status-card"><StatusPill value={apiSession.status} /><span>{apiSession.expiresAt ? `Expires at ${new Date(apiSession.expiresAt).toLocaleTimeString()}` : 'No active AI API session'}</span><span>{apiSession.providerName ? `${apiSession.providerName} / ${apiSession.modelName}` : 'Provider not configured'}</span></div></section>
+function AiProviderPage({ apiSession, connectApi, disconnectApi }: { apiSession: ApiSession; connectApi: (event: FormEvent<HTMLFormElement>) => void; disconnectApi: () => void }) {
+  return <section className="page"><PageHeader eyebrow="Page 1" title="AI Provider Registration" subtitle="Configure any OpenAI-compatible provider. API key is validated and kept only in the temporary server session." /><form className="card form-grid" onSubmit={connectApi}><label>Provider name<input name="providerName" defaultValue={apiSession.providerName ?? ''} placeholder="Provider name" /></label><label>Base URL<input name="baseUrl" defaultValue={apiSession.baseUrl ?? ''} placeholder="https://provider.example.com" /></label><label>Model name<input name="modelName" defaultValue={apiSession.modelName ?? ''} placeholder="model-name" /></label><label>API key<input name="apiKey" type="password" placeholder="Never stored in database" /></label><button className="primary">Validate and Connect</button><button type="button" className="danger-button" onClick={disconnectApi} disabled={apiSession.status !== 'CONNECTED'}>Disconnect Session Key</button></form><div className="status-card"><StatusPill value={apiSession.status} /><span>{apiSession.expiresAt ? `Expires at ${new Date(apiSession.expiresAt).toLocaleTimeString()}` : 'No active AI API session'}</span><span>{apiSession.providerName ? `${apiSession.providerName} / ${apiSession.modelName}` : 'Provider not configured'}</span></div></section>
 }
 
-function DatasetsPage(props: { datasets: Dataset[]; activeId: string; detail: Detail | null; createDataset: (event: FormEvent<HTMLFormElement>) => void; loadDetail: (id: string) => void; deleteDataset: (id: string) => void }) {
-  return <section className="page"><PageHeader eyebrow="Workspace" title="Dataset Manager" subtitle="Create, select, inspect, and delete assessment datasets." /><div className="split"><form className="card form-stack" onSubmit={props.createDataset}><h2>Create Dataset</h2><label>Name<input name="name" placeholder="Cloud IAM Review" /></label><label>Description<input name="description" placeholder="Optional" /></label><button className="primary">Create Dataset</button></form><div className="card"><h2>Datasets</h2>{props.datasets.length ? <div className="records">{props.datasets.map((dataset) => <article key={dataset.id} className={dataset.id === props.activeId ? 'selected-record' : ''}><button onClick={() => props.loadDetail(dataset.id)}><strong>{dataset.name}</strong><span>{dataset.description || 'No description'}</span></button><button className="danger-button" onClick={() => props.deleteDataset(dataset.id)}>Delete</button></article>)}</div> : <EmptyState title="No datasets yet" body="Create a Dataset first. Controls, evidence, rules, and assessment history are organized under a selected Dataset." />}</div></div>{props.detail && <div className="card metrics"><Metric label="Evidence files" value={props.detail.evidenceFiles.length} /><Metric label="Control docs" value={props.detail.controlDocuments.length} /><Metric label="Rule sets" value={props.detail.ruleSets.length} /><Metric label="Assessment runs" value={props.detail.assessmentRuns.length} /></div>}</section>
+function DatasetsPage(props: { datasets: Dataset[]; activeId: string; detail: Detail | null; createDataset: (event: FormEvent<HTMLFormElement>) => void; updateDataset: (event: FormEvent<HTMLFormElement>) => void; loadDetail: (id: string) => void; deleteDataset: (id: string) => void }) {
+  return <section className="page"><PageHeader eyebrow="Workspace" title="Dataset Manager" subtitle="Create, select, inspect, update, and delete assessment datasets." /><div className="split"><form className="card form-stack" onSubmit={props.createDataset}><h2>Create Dataset</h2><label>Name<input name="name" placeholder="Cloud IAM Review" /></label><label>Description<input name="description" placeholder="Optional" /></label><button className="primary">Create Dataset</button></form><form className="card form-stack" onSubmit={props.updateDataset}><h2>Update Selected Dataset</h2><label>Name<input name="name" defaultValue={props.detail?.dataset.name ?? ''} /></label><label>Description<input name="description" defaultValue={props.detail?.dataset.description ?? ''} /></label><button className="primary" disabled={!props.detail}>Save Dataset Changes</button></form></div><div className="card"><h2>Datasets</h2>{props.datasets.length ? <div className="records">{props.datasets.map((dataset) => <article key={dataset.id} className={dataset.id === props.activeId ? 'selected-record' : ''}><button onClick={() => props.loadDetail(dataset.id)}><strong>{dataset.name}</strong><span>{dataset.description || 'No description'}</span></button><button className="danger-button" onClick={() => props.deleteDataset(dataset.id)}>Delete</button></article>)}</div> : <EmptyState title="No datasets yet" body="Create a Dataset first. Controls, evidence, rules, and assessment history are organized under a selected Dataset." />}</div>{props.detail && <div className="card metrics"><Metric label="Evidence files" value={props.detail.evidenceFiles.length} /><Metric label="Control docs" value={props.detail.controlDocuments.length} /><Metric label="Rule sets" value={props.detail.ruleSets.length} /><Metric label="Assessment runs" value={props.detail.assessmentRuns.length} /></div>}</section>
 }
 
-function ControlsPage({ detail, upload }: { detail: Detail; upload: (kind: 'controls' | 'evidence', file?: File) => void }) {
-  return <section className="page"><PageHeader eyebrow="Page 2" title="Security Control Upload" subtitle="Upload natural-language rule documents. Full original text remains preserved for traceability." /><UploadCard title="Upload Control Document" description="Supported formats: PDF, DOCX, TXT, Markdown, HTML." onFile={(file) => upload('controls', file)} /><div className="card"><h2>Uploaded Controls</h2>{detail.controlDocuments.length ? <div className="records vertical">{detail.controlDocuments.map((control) => <article key={control.id}><strong>{control.title || control.filename}</strong><span>{control.filename} · {control.format} · {new Date(control.createdAt).toLocaleString()}</span><p>{control.fullText.slice(0, 420)}</p></article>)}</div> : <EmptyState title="No control documents" body="Upload PDF, DOCX, TXT, Markdown, or HTML Security Control documents here before generating rules." />}</div></section>
+function ControlsPage({ detail, upload, deleteControl, loadControlChunks, chunks }: { detail: Detail; upload: (kind: 'controls' | 'evidence', file?: File) => void; deleteControl: (id: string) => void; loadControlChunks: (id: string) => void; chunks: ControlChunk[] }) {
+  return <section className="page"><PageHeader eyebrow="Page 2" title="Security Control Upload" subtitle="Upload natural-language rule documents. Full original text remains preserved for traceability." /><UploadCard title="Upload Control Document" description="Supported formats: PDF, DOCX, TXT, Markdown, HTML." onFile={(file) => upload('controls', file)} /><div className="card"><h2>Uploaded Controls</h2>{detail.controlDocuments.length ? <div className="records vertical">{detail.controlDocuments.map((control) => <article key={control.id}><div><strong>{control.title || control.filename}</strong><span>{control.filename} · {control.format} · {new Date(control.createdAt).toLocaleString()}</span><p>{control.fullText.slice(0, 420)}</p></div><div className="button-row"><button onClick={() => loadControlChunks(control.id)}>View Chunks</button><button className="danger-button" onClick={() => deleteControl(control.id)}>Delete</button></div></article>)}</div> : <EmptyState title="No control documents" body="Upload PDF, DOCX, TXT, Markdown, or HTML Security Control documents here before generating rules." />}</div><div className="card"><h2>RAG Chunks</h2>{chunks.length ? <div className="records vertical">{chunks.map((chunk) => <article key={chunk.id}><strong>Chunk {chunk.chunkIndex} · {chunk.controlId ?? 'No control id'}</strong><span>{chunk.section ?? 'No section'} · page {chunk.page ?? '-'}</span><p>{chunk.chunkText}</p></article>)}</div> : <EmptyState title="No chunks loaded" body="Click View Chunks on a control document to inspect traceable RAG chunks." />}</div></section>
 }
 
 function EvidencePage(props: { detail: Detail; rows: Record<string, unknown>[]; selectedEvidenceId: string; setSelectedEvidenceId: (value: string) => void; upload: (kind: 'controls' | 'evidence', file?: File) => void; deleteEvidence: (id: string) => void }) {
   return <section className="page"><PageHeader eyebrow="Page 3" title="Cybersecurity Evidence Data" subtitle="Upload structured evidence only. Unsupported or unstructured files are rejected by the backend parser." /><UploadCard title="Upload Evidence" description="Supported formats: CSV, XLSX, JSON, JSONL, XML." onFile={(file) => props.upload('evidence', file)} /><div className="split"><div className="card"><h2>Evidence Files</h2>{props.detail.evidenceFiles.length ? <div className="records vertical">{props.detail.evidenceFiles.map((file) => <article key={file.id} className={file.id === props.selectedEvidenceId ? 'selected-record' : ''}><button onClick={() => props.setSelectedEvidenceId(file.id)}><strong>{file.filename}</strong><span>{file.format} · {file.rowCount} rows · {new Date(file.createdAt).toLocaleString()}</span></button><button className="danger-button" onClick={() => props.deleteEvidence(file.id)}>Delete</button></article>)}</div> : <EmptyState title="No evidence files" body="Upload CSV, XLSX, JSON, JSONL, or XML evidence. Files that cannot become columns and rows are rejected." />}</div><div className="card"><h2>Table Preview</h2><DataPreview rows={props.rows} /></div></div></section>
 }
 
-function RulesPage(props: { detail: Detail; apiSession: ApiSession; manualRule: string; setManualRule: (value: string) => void; generateRules: () => void; saveManualRules: () => void; confirmRuleSet: (id: string) => void }) {
+function RulesPage(props: { detail: Detail; apiSession: ApiSession; manualRule: string; setManualRule: (value: string) => void; generateRules: () => void; saveManualRules: () => void; confirmRuleSet: (id: string) => void; updateRuleSet: (id: string) => void }) {
   const columns = parseJsonArray(props.detail.evidenceFiles[0]?.columnsJson) as { name: string; type?: string }[]
   const fields = columns.map((column) => column.name).filter(Boolean)
   const firstControl = props.detail.controlDocuments[0]
@@ -367,7 +492,7 @@ function RulesPage(props: { detail: Detail; apiSession: ApiSession; manualRule: 
     props.setManualRule(JSON.stringify(rule, null, 2))
   }
 
-  return <section className="page"><PageHeader eyebrow="Page 4" title="AI Rule Blocks and Visual Builder" subtitle="Generate constrained rule AST from uploaded controls and evidence, or build one manually without editing raw JSON." /><div className="rule-layout"><div className="card form-stack"><h2>AI Generation</h2><label>AI Session<StatusPill value={props.apiSession.status} /></label><label>Security Control{props.detail.controlDocuments.length ? <select>{props.detail.controlDocuments.map((control) => <option key={control.id}>{control.title || control.filename}</option>)}</select> : <EmptyState title="No controls available" body="Upload Security Control documents before asking AI to generate rule blocks." />}</label><label>Evidence Schema{props.detail.evidenceFiles.length ? <select>{props.detail.evidenceFiles.map((file) => <option key={file.id}>{file.filename}</option>)}</select> : <EmptyState title="No evidence available" body="Upload structured evidence so rule generation can compare controls against real fields." />}</label><button className="primary" disabled={!canGenerate} onClick={props.generateRules}>Generate Rule Blocks</button><h2>Visual Rule Builder</h2>{canBuildManually ? <form className="visual-builder" onSubmit={buildManualRule}><div className="builder-row"><strong>IF</strong><select name="ifField">{fields.map((field) => <option key={field}>{field}</option>)}</select><select name="ifOperator"><option>=</option><option>!=</option><option>IN</option><option>NOT IN</option><option>CONTAINS</option><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option></select><input name="ifValue" placeholder="value" /></div><div className="builder-row"><strong>THEN</strong><select name="thenField">{fields.map((field) => <option key={field}>{field}</option>)}</select><select name="thenOperator"><option>=</option><option>!=</option><option>IN</option><option>NOT IN</option><option>CONTAINS</option><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option></select><input name="thenValue" placeholder="expected value" /></div><button>Build Rule JSON</button></form> : <EmptyState title="Manual builder is not ready" body="Upload at least one control document and one structured evidence file so the builder has source text and field names." />}<h2>Auditable Rule JSON</h2><textarea className="code-editor" value={props.manualRule} onChange={(event) => props.setManualRule(event.target.value)} /><button onClick={props.saveManualRules}>Save Rule Set</button></div><div className="card"><h2>Rule Review</h2>{props.detail.ruleSets.length ? <div className="records vertical">{props.detail.ruleSets.map((ruleSet) => <article key={ruleSet.id}><div className="record-header"><strong>Version {ruleSet.version}</strong><StatusPill value={ruleSet.status} /></div><span>{ruleSet.confirmedAt ? `Confirmed ${new Date(ruleSet.confirmedAt).toLocaleString()}` : 'Not confirmed'}</span><RuleReview rulesJson={ruleSet.rulesJson} /><pre>{pretty(ruleSet.generationSummaryJson)}</pre><button disabled={ruleSet.status !== 'READY' || Boolean(ruleSet.confirmedAt)} onClick={() => props.confirmRuleSet(ruleSet.id)}>Confirm Rule Set</button></article>)}</div> : <EmptyState title="No rule sets yet" body="Generate rules with a connected AI provider or save a manual rule set from the builder." />}</div></div></section>
+  return <section className="page"><PageHeader eyebrow="Page 4" title="AI Rule Blocks and Visual Builder" subtitle="Generate constrained rule AST from uploaded controls and evidence, or build one manually without editing raw JSON." /><div className="rule-layout"><div className="card form-stack"><h2>AI Generation</h2><label>AI Session<StatusPill value={props.apiSession.status} /></label><label>Security Control{props.detail.controlDocuments.length ? <select>{props.detail.controlDocuments.map((control) => <option key={control.id}>{control.title || control.filename}</option>)}</select> : <EmptyState title="No controls available" body="Upload Security Control documents before asking AI to generate rule blocks." />}</label><label>Evidence Schema{props.detail.evidenceFiles.length ? <select>{props.detail.evidenceFiles.map((file) => <option key={file.id}>{file.filename}</option>)}</select> : <EmptyState title="No evidence available" body="Upload structured evidence so rule generation can compare controls against real fields." />}</label><button className="primary" disabled={!canGenerate} onClick={props.generateRules}>Generate Rule Blocks</button><h2>Visual Rule Builder</h2>{canBuildManually ? <form className="visual-builder" onSubmit={buildManualRule}><div className="builder-row"><strong>IF</strong><select name="ifField">{fields.map((field) => <option key={field}>{field}</option>)}</select><select name="ifOperator"><option>=</option><option>!=</option><option>IN</option><option>NOT IN</option><option>CONTAINS</option><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option></select><input name="ifValue" placeholder="value" /></div><div className="builder-row"><strong>THEN</strong><select name="thenField">{fields.map((field) => <option key={field}>{field}</option>)}</select><select name="thenOperator"><option>=</option><option>!=</option><option>IN</option><option>NOT IN</option><option>CONTAINS</option><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option></select><input name="thenValue" placeholder="expected value" /></div><button>Build Rule JSON</button></form> : <EmptyState title="Manual builder is not ready" body="Upload at least one control document and one structured evidence file so the builder has source text and field names." />}<h2>Auditable Rule JSON</h2><textarea className="code-editor" value={props.manualRule} onChange={(event) => props.setManualRule(event.target.value)} /><button onClick={props.saveManualRules}>Save Rule Set</button></div><div className="card"><h2>Rule Review</h2>{props.detail.ruleSets.length ? <div className="records vertical">{props.detail.ruleSets.map((ruleSet) => <article key={ruleSet.id}><div className="record-header"><strong>Version {ruleSet.version}</strong><StatusPill value={ruleSet.status} /></div><span>{ruleSet.confirmedAt ? `Confirmed ${new Date(ruleSet.confirmedAt).toLocaleString()}` : 'Not confirmed'}</span><RuleReview rulesJson={ruleSet.rulesJson} /><pre>{pretty(ruleSet.generationSummaryJson)}</pre><div className="button-row"><button onClick={() => props.updateRuleSet(ruleSet.id)} disabled={Boolean(ruleSet.confirmedAt)}>Update From Editor</button><button disabled={ruleSet.status !== 'READY' || Boolean(ruleSet.confirmedAt)} onClick={() => props.confirmRuleSet(ruleSet.id)}>Confirm Rule Set</button></div></article>)}</div> : <EmptyState title="No rule sets yet" body="Generate rules with a connected AI provider or save a manual rule set from the builder." />}</div></div></section>
 }
 
 function AssessmentPage(props: { detail: Detail; selectedEvidenceId: string; setSelectedEvidenceId: (value: string) => void; selectedRuleSetId: string; setSelectedRuleSetId: (value: string) => void; startAssessment: () => void }) {
@@ -380,8 +505,8 @@ function HistoryPage({ runs }: { runs: Assessment[] }) {
   return <section className="page"><PageHeader eyebrow="Traceability" title="Assessment History and Results" subtitle="Every run stays tied to the evidence file and rule version used at execution time." /><div className="card"><h2>Runs</h2>{runs.length ? <div className="records vertical">{runs.map((run) => <article key={run.id}><div className="record-header"><strong>{new Date(run.createdAt).toLocaleString()}</strong><StatusPill value={run.violationsDetected ? `${run.violationsDetected} VIOLATIONS` : 'PASS'} /></div><span>{run.recordsEvaluated} records · {run.rulesEvaluated} rules · status {run.status}</span><pre>{pretty(run.resultJson)}</pre></article>)}</div> : <EmptyState title="No assessment history yet" body="History appears after you run an assessment from the Assessment page using selected evidence and a rule set." />}</div></section>
 }
 
-function BenchmarkPage({ cases, refreshCases, runBenchmark, result }: { cases: BenchmarkCase[]; refreshCases: () => void; runBenchmark: (event: FormEvent<HTMLFormElement>) => void; result: BenchmarkResult | null }) {
-  return <section className="page"><PageHeader eyebrow="Page 6" title="AI Reliability Benchmark" subtitle="Run structural AST comparison and deterministic rule-engine execution comparison against human ground truth." /><div className="benchmark-grid"><form className="card form-stack" onSubmit={runBenchmark}><h2>Custom Case</h2><label>Control text<textarea name="controlText" defaultValue="Administrative accounts must use MFA." /></label><label>Test data<textarea name="testDataJson" defaultValue='[{"role":"admin","mfa_enabled":false},{"role":"user","mfa_enabled":true}]' /></label><label>Ground-truth rule<textarea name="groundTruthRuleJson" defaultValue={sampleRule} /></label><label>AI generated rule<textarea name="aiGeneratedRuleJson" placeholder="Optional. Leave blank to generate with the connected AI provider." /></label><label>Expected result<textarea name="expectedResultJson" placeholder="Optional: paste expected assessment result JSON. Leave blank to execute ground-truth rule." /></label><button className="primary">Run Benchmark Case</button></form><div className="card"><div className="record-header"><h2>Built-in Cases</h2><button onClick={refreshCases}>Reload Cases</button></div>{cases.length ? <div className="records vertical">{cases.map((item) => <article key={item.id}><strong>{item.name}</strong><span>{item.id}</span><p>{item.controlText}</p></article>)}</div> : <EmptyState title="No built-in cases loaded" body="Use Reload Cases to fetch benchmark cases from the backend." />}<h2>Reliability Results</h2><div className="metrics"><Metric label="Total cases" value={result?.totalCases ?? 0} /><Metric label="Accuracy" value={result ? `${Math.round(result.accuracy * 100)}%` : '--'} /><Metric label="AST equivalent" value={result ? (result.structurallyEquivalent ? 'Yes' : 'No') : '--'} /><Metric label="Execution equivalent" value={result ? (result.executionEquivalent ? 'Yes' : 'No') : '--'} /></div>{result ? <div className="records vertical"><article><div className="record-header"><strong>Differences</strong><StatusPill value={result.differences.length ? 'ERROR' : 'PASS'} /></div>{result.differences.length ? result.differences.map((item) => <p key={item.type}>{item.type}: {item.message}</p>) : <p>No reliability difference detected.</p>}</article><article><strong>AI generated rule</strong><pre>{pretty(result.aiGeneratedRuleJson)}</pre></article><article><strong>Generated execution</strong><pre>{pretty(result.generatedExecutionJson)}</pre></article><article><strong>Ground-truth execution</strong><pre>{pretty(result.groundTruthExecutionJson)}</pre></article></div> : <div className="empty-box">Run a benchmark case to see reliability metrics.</div>}</div></div></section>
+function BenchmarkPage({ cases, runs, refreshCases, runBenchmark, createCase, deleteCase, runSavedCase, result }: { cases: BenchmarkCase[]; runs: BenchmarkRunRecord[]; refreshCases: () => void; runBenchmark: (event: FormEvent<HTMLFormElement>) => void; createCase: (event: FormEvent<HTMLFormElement>) => void; deleteCase: (id: string) => void; runSavedCase: (id: string) => void; result: BenchmarkResult | null }) {
+  return <section className="page"><PageHeader eyebrow="Page 6" title="AI Reliability Benchmark" subtitle="Run structural AST comparison and deterministic rule-engine execution comparison against human ground truth." /><div className="benchmark-grid"><form className="card form-stack" onSubmit={createCase}><h2>Create Custom Case</h2><label>Name<input name="name" defaultValue="Administrative MFA Custom" /></label><label>Control text<textarea name="controlText" defaultValue="Administrative accounts must use MFA." /></label><label>Test data<textarea name="testDataJson" defaultValue='[{"role":"admin","mfa_enabled":false},{"role":"user","mfa_enabled":true}]' /></label><label>Ground-truth rule<textarea name="groundTruthRuleJson" defaultValue={sampleRule} /></label><label>Expected result<textarea name="expectedResultJson" placeholder="Optional: paste expected assessment result JSON." /></label><button className="primary">Save Custom Case</button></form><form className="card form-stack" onSubmit={runBenchmark}><h2>Run One-off Case</h2><label>Control text<textarea name="controlText" defaultValue="Administrative accounts must use MFA." /></label><label>Test data<textarea name="testDataJson" defaultValue='[{"role":"admin","mfa_enabled":false},{"role":"user","mfa_enabled":true}]' /></label><label>Ground-truth rule<textarea name="groundTruthRuleJson" defaultValue={sampleRule} /></label><label>AI generated rule<textarea name="aiGeneratedRuleJson" placeholder="Optional. Leave blank to generate with the connected AI provider." /></label><label>Expected result<textarea name="expectedResultJson" placeholder="Optional: paste expected assessment result JSON. Leave blank to execute ground-truth rule." /></label><button className="primary">Run Benchmark Case</button></form></div><div className="card"><div className="record-header"><h2>Saved Cases</h2><button onClick={refreshCases}>Reload Cases</button></div>{cases.length ? <div className="records vertical">{cases.map((item) => <article key={item.id}><div><strong>{item.name}</strong><span>{item.builtin ? 'Built-in' : 'Custom'} · {item.id}</span><p>{item.controlText}</p></div><div className="button-row"><button onClick={() => runSavedCase(item.id)}>Run Saved Case</button><button className="danger-button" disabled={item.builtin} onClick={() => deleteCase(item.id)}>Delete</button></div></article>)}</div> : <EmptyState title="No benchmark cases loaded" body="Use Reload Cases to fetch benchmark cases from the backend." />}</div><div className="card"><h2>Reliability Results</h2><div className="metrics"><Metric label="Total cases" value={result?.totalCases ?? 0} /><Metric label="Accuracy" value={result ? `${Math.round(result.accuracy * 100)}%` : '--'} /><Metric label="AST equivalent" value={result ? (result.structurallyEquivalent ? 'Yes' : 'No') : '--'} /><Metric label="Execution equivalent" value={result ? (result.executionEquivalent ? 'Yes' : 'No') : '--'} /></div>{result ? <div className="records vertical"><article><div className="record-header"><strong>Differences</strong><StatusPill value={result.differences.length ? 'ERROR' : 'PASS'} /></div>{result.differences.length ? result.differences.map((item) => <p key={item.type}>{item.type}: {item.message}</p>) : <p>No reliability difference detected.</p>}</article><article><strong>AI generated rule</strong><pre>{pretty(result.aiGeneratedRuleJson)}</pre></article><article><strong>Generated execution</strong><pre>{pretty(result.generatedExecutionJson)}</pre></article><article><strong>Ground-truth execution</strong><pre>{pretty(result.groundTruthExecutionJson)}</pre></article></div> : <div className="empty-box">Run a benchmark case to see reliability metrics.</div>}</div><div className="card"><h2>Benchmark Run History</h2>{runs.length ? <div className="records vertical">{runs.map((run) => <article key={run.id}><div className="record-header"><strong>{new Date(run.createdAt).toLocaleString()}</strong><StatusPill value={run.executionEquivalent ? 'PASS' : 'ERROR'} /></div><span>Accuracy {Math.round(run.accuracy * 100)}% · {run.benchmarkCaseId ?? 'one-off case'}</span><pre>{pretty(run.differencesJson)}</pre></article>)}</div> : <EmptyState title="No benchmark run history" body="Run a saved or one-off benchmark case to create persistent reliability history." />}</div></section>
 }
 
 function RuleReview({ rulesJson }: { rulesJson: string }) {
@@ -390,8 +515,18 @@ function RuleReview({ rulesJson }: { rulesJson: string }) {
   return <div className="rule-review">{rules.map((rule, index) => <div key={rule.id ?? index} className="rule-card"><div><span>Fields Used</span><strong>{rule.fieldsUsed?.join(', ') || 'Not specified'}</strong></div><div><span>Generated Rule</span><code>{ruleText(rule.ast)}</code></div><div><span>Source Control</span><p>{rule.sourceControl?.controlId ?? 'Unknown'} · {rule.sourceControl?.text ?? 'No source text'}</p></div><div><span>Explanation</span><p>{rule.explanation ?? 'No explanation provided.'}</p></div></div>)}</div>
 }
 function ApiCoveragePage() {
-  const endpoints = ['GET /api/v1/health', 'POST /api/v1/auth/register', 'POST /api/v1/auth/login', 'POST /api/v1/auth/ai-session', 'GET /api/v1/auth/ai-session', 'POST /api/v1/datasets', 'GET /api/v1/datasets', 'GET /api/v1/datasets/{datasetId}', 'DELETE /api/v1/datasets/{datasetId}', 'POST /api/v1/datasets/{datasetId}/controls', 'POST /api/v1/datasets/{datasetId}/evidence', 'DELETE /api/v1/datasets/{datasetId}/evidence/{evidenceId}', 'POST /api/v1/datasets/{datasetId}/rules/generate', 'POST /api/v1/datasets/{datasetId}/rules/manual', 'POST /api/v1/datasets/{datasetId}/rules/{ruleSetId}/confirm', 'POST /api/v1/datasets/{datasetId}/assessments', 'GET /api/v1/benchmarks/cases', 'POST /api/v1/benchmarks/run']
-  return <section className="page"><PageHeader eyebrow="API" title="Backend API Coverage" subtitle="Every currently implemented backend endpoint has a visible frontend entry or status here." /><div className="card endpoint-list">{endpoints.map((endpoint) => <div key={endpoint}><code>{endpoint}</code><StatusPill value="WIRED" /></div>)}</div></section>
+  const endpoints = [
+    'GET /api/v1/health',
+    'POST /api/v1/auth/register', 'POST /api/v1/auth/login', 'POST /api/v1/auth/logout',
+    'POST /api/v1/auth/ai-session', 'GET /api/v1/auth/ai-session', 'DELETE /api/v1/auth/ai-session',
+    'POST /api/v1/datasets', 'GET /api/v1/datasets', 'GET /api/v1/datasets/{datasetId}', 'PATCH /api/v1/datasets/{datasetId}', 'DELETE /api/v1/datasets/{datasetId}',
+    'POST /api/v1/datasets/{datasetId}/evidence', 'GET /api/v1/datasets/{datasetId}/evidence', 'GET /api/v1/datasets/{datasetId}/evidence/{evidenceId}', 'GET /api/v1/datasets/{datasetId}/evidence/{evidenceId}/rows', 'DELETE /api/v1/datasets/{datasetId}/evidence/{evidenceId}',
+    'POST /api/v1/datasets/{datasetId}/controls', 'GET /api/v1/datasets/{datasetId}/controls', 'GET /api/v1/datasets/{datasetId}/controls/{controlId}', 'DELETE /api/v1/datasets/{datasetId}/controls/{controlId}', 'GET /api/v1/datasets/{datasetId}/controls/{controlId}/chunks',
+    'POST /api/v1/datasets/{datasetId}/rules/generate', 'GET /api/v1/datasets/{datasetId}/rules', 'GET /api/v1/datasets/{datasetId}/rules/{ruleSetId}', 'POST /api/v1/datasets/{datasetId}/rules/manual', 'PATCH /api/v1/datasets/{datasetId}/rules/{ruleSetId}', 'POST /api/v1/datasets/{datasetId}/rules/{ruleSetId}/confirm',
+    'POST /api/v1/datasets/{datasetId}/assessments', 'GET /api/v1/datasets/{datasetId}/assessments', 'GET /api/v1/datasets/{datasetId}/assessments/{assessmentId}',
+    'GET /api/v1/benchmarks/cases', 'POST /api/v1/benchmarks/cases', 'GET /api/v1/benchmarks/cases/{caseId}', 'DELETE /api/v1/benchmarks/cases/{caseId}', 'POST /api/v1/benchmarks/run', 'GET /api/v1/benchmarks/runs', 'GET /api/v1/benchmarks/runs/{runId}',
+  ]
+  return <section className="page"><PageHeader eyebrow="API" title="Backend API Coverage" subtitle="Implemented backend endpoints and their frontend-visible coverage status." /><div className="card endpoint-list">{endpoints.map((endpoint) => <div key={endpoint}><code>{endpoint}</code><StatusPill value="WIRED" /></div>)}</div></section>
 }
 
 function RequireDataset({ detail, children }: { detail: Detail | null; children: ReactNode }) {

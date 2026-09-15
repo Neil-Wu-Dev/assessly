@@ -6,6 +6,7 @@ import com.assessly.repositories.jpa.AssessmentJpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Repository
@@ -18,4 +19,5 @@ class AssessmentRepositoryAdapter implements AssessmentRepository {
 
     public AssessmentRun save(AssessmentRun assessmentRun) { return jpa.save(assessmentRun); }
     public List<AssessmentRun> findByDataset(UUID datasetId) { return jpa.findByDatasetIdOrderByCreatedAtDesc(datasetId); }
+    public Optional<AssessmentRun> findByIdAndDataset(UUID assessmentId, UUID datasetId) { return jpa.findByIdAndDatasetId(assessmentId, datasetId); }
 }

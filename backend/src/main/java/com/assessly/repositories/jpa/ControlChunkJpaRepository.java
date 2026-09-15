@@ -8,4 +8,5 @@ import java.util.UUID;
 
 public interface ControlChunkJpaRepository extends JpaRepository<ControlChunk, UUID> {
     List<ControlChunk> findByDocumentIdOrderByChunkIndex(UUID documentId);
+    void deleteByDocumentId(UUID documentId);
 }

@@ -1,6 +1,7 @@
 package com.assessly.services;
 
 import com.assessly.defs.AssessmentStatus;
+import com.assessly.exceptions.NotFoundException;
 import com.assessly.exceptions.RuleValidationException;
 import com.assessly.models.AssessmentRun;
 import com.assessly.models.EvidenceFile;
@@ -38,7 +39,7 @@ public class AssessmentServiceImpl implements AssessmentService {
     public AssessmentRun start(UUID ownerId, UUID datasetId, UUID evidenceFileId, UUID ruleSetId) {
         datasets.get(ownerId, datasetId);
         EvidenceFile evidenceFile = evidence.get(ownerId, datasetId, evidenceFileId);
-        RuleSet ruleSet = ruleSets.findByIdAndDataset(ruleSetId, datasetId).orElseThrow();
+        RuleSet ruleSet = ruleSets.findByIdAndDataset(ruleSetId, datasetId).orElseThrow(() -> new NotFoundException("Rule Set not found."));
         if (!ruleSet.isExecutable()) throw new RuleValidationException("Rule Set is not confirmed or executable.");
         ruleEngine.validateRuleSet(ruleSet.getRulesJson());
         ruleEngine.validateFields(ruleSet.getRulesJson(), fieldsFromColumns(evidenceFile.getColumnsJson()));
@@ -50,6 +51,11 @@ public class AssessmentServiceImpl implements AssessmentService {
     public List<AssessmentRun> history(UUID ownerId, UUID datasetId) {
         datasets.get(ownerId, datasetId);
         return assessments.findByDataset(datasetId);
+    }
+
+    public AssessmentRun get(UUID ownerId, UUID datasetId, UUID assessmentId) {
+        datasets.get(ownerId, datasetId);
+        return assessments.findByIdAndDataset(assessmentId, datasetId).orElseThrow(() -> new NotFoundException("Assessment run not found."));
     }
 
     private Set<String> fieldsFromColumns(String columnsJson) {

@@ -21,6 +21,12 @@ public class DatasetServiceImpl implements DatasetService {
         return datasets.save(new Dataset(ownerId, name, description));
     }
 
+    public Dataset update(UUID ownerId, UUID datasetId, String name, String description) {
+        Dataset dataset = get(ownerId, datasetId);
+        dataset.updateDetails(name, description);
+        return datasets.save(dataset);
+    }
+
     public List<Dataset> list(UUID ownerId) {
         return datasets.findByOwner(ownerId);
     }

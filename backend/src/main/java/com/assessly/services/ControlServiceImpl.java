@@ -1,5 +1,6 @@
 package com.assessly.services;
 
+import com.assessly.exceptions.NotFoundException;
 import com.assessly.models.ControlChunk;
 import com.assessly.models.ControlDocument;
 import com.assessly.repositories.interfaces.ControlRepository;
@@ -38,5 +39,22 @@ public class ControlServiceImpl implements ControlService {
     public List<ControlDocument> list(UUID ownerId, UUID datasetId) {
         datasets.get(ownerId, datasetId);
         return controls.findDocumentsByDataset(datasetId);
+    }
+
+    public ControlDocument get(UUID ownerId, UUID datasetId, UUID controlId) {
+        datasets.get(ownerId, datasetId);
+        return controls.findDocumentByIdAndDataset(controlId, datasetId).orElseThrow(() -> new NotFoundException("Control document not found."));
+    }
+
+    public List<ControlChunk> chunks(UUID ownerId, UUID datasetId, UUID controlId) {
+        ControlDocument document = get(ownerId, datasetId, controlId);
+        return controls.findChunksByDocument(document.getId());
+    }
+
+    @Transactional
+    public void delete(UUID ownerId, UUID datasetId, UUID controlId) {
+        ControlDocument document = get(ownerId, datasetId, controlId);
+        controls.deleteChunksByDocument(document.getId());
+        controls.deleteDocument(document);
     }
 }

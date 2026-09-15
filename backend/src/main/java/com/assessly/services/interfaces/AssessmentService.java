@@ -8,4 +8,5 @@ import java.util.UUID;
 public interface AssessmentService {
     AssessmentRun start(UUID ownerId, UUID datasetId, UUID evidenceFileId, UUID ruleSetId);
     List<AssessmentRun> history(UUID ownerId, UUID datasetId);
+    AssessmentRun get(UUID ownerId, UUID datasetId, UUID assessmentId);
 }

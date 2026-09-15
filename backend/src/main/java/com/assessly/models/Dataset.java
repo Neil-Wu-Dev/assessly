@@ -43,6 +43,15 @@ public class Dataset {
         this.updatedAt = this.createdAt;
     }
 
+    public void updateDetails(String name, String description) {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Dataset name is required.");
+        }
+        this.name = name.trim();
+        this.description = description;
+        touch();
+    }
+
     public void adoptOrValidateSchema(String incomingSchemaJson, Set<String> requiredFields) {
         if (schemaJson == null || schemaJson.isBlank()) {
             schemaJson = incomingSchemaJson;

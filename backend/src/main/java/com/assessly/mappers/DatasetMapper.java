@@ -1,8 +1,10 @@
 package com.assessly.mappers;
 
+import com.assessly.models.ControlChunk;
 import com.assessly.models.ControlDocument;
 import com.assessly.models.Dataset;
 import com.assessly.models.EvidenceFile;
+import com.assessly.schemas.DatasetSchemas.ControlChunkResponse;
 import com.assessly.schemas.DatasetSchemas.ControlDocumentResponse;
 import com.assessly.schemas.DatasetSchemas.DatasetResponse;
 import com.assessly.schemas.DatasetSchemas.EvidenceResponse;
@@ -20,5 +22,9 @@ public class DatasetMapper {
 
     public ControlDocumentResponse toResponse(ControlDocument document) {
         return new ControlDocumentResponse(document.getId(), document.getFilename(), document.getFormat(), document.getTitle(), document.getFullText(), document.getStructureJson(), document.getCreatedAt());
+    }
+
+    public ControlChunkResponse toResponse(ControlChunk chunk) {
+        return new ControlChunkResponse(chunk.getId(), chunk.getDocumentId(), chunk.getControlId(), chunk.getSection(), chunk.getPage(), chunk.getChunkIndex(), chunk.getChunkText(), chunk.getParentReference(), chunk.getCreatedAt());
     }
 }

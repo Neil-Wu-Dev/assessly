@@ -7,4 +7,5 @@ public interface AuthService {
     UserAccount login(String email, String password);
     UserAccount requireUser(String sessionToken);
     String createSession(UserAccount user);
+    void logout(String sessionToken);
 }
