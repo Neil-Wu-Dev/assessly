@@ -13,7 +13,7 @@ public class BenchmarkSchemas {
             @NotBlank String testDataJson,
             @NotBlank String groundTruthRuleJson,
             String expectedResultJson,
-            @NotBlank String aiGeneratedRuleJson
+            String aiGeneratedRuleJson
     ) {}
 
     public record BenchmarkRunResponse(
@@ -22,6 +22,7 @@ public class BenchmarkSchemas {
             int totalCases,
             int correctCases,
             double accuracy,
+            String aiGeneratedRuleJson,
             String generatedExecutionJson,
             String groundTruthExecutionJson,
             List<Map<String, Object>> differences

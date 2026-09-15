@@ -1,0 +1,5 @@
+Control IAM-04
+Administrative accounts must use MFA.
+
+Control VM-01
+Critical vulnerabilities must be remediated within 30 days.

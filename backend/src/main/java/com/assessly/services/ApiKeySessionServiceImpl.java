@@ -5,6 +5,7 @@ import com.assessly.exceptions.AuthenticationException;
 import com.assessly.models.AiProviderSettings;
 import com.assessly.repositories.interfaces.AiProviderSettingsRepository;
 import com.assessly.services.interfaces.ApiKeySessionService;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -15,6 +16,7 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,8 +34,8 @@ public class ApiKeySessionServiceImpl implements ApiKeySessionService {
 
     public ApiSession connect(UUID userId, String providerName, String baseUrl, String modelName, String apiKey) {
         AiProviderSettings settings = settingsRepository.findByUserId(userId)
-                .orElseGet(() -> new AiProviderSettings(userId, providerName, baseUrl, modelName));
-        settings.update(providerName, baseUrl, modelName);
+                .orElseGet(() -> new AiProviderSettings(userId, providerName, normalizeBaseUrl(baseUrl), modelName));
+        settings.update(providerName, normalizeBaseUrl(baseUrl), modelName);
         validate(settings, apiKey);
         settingsRepository.save(settings);
 
@@ -62,19 +64,45 @@ public class ApiKeySessionServiceImpl implements ApiKeySessionService {
         return sessions.get(userId).apiKey();
     }
 
+    public String chatCompletion(UUID userId, List<Map<String, String>> messages) {
+        requireApiKey(userId);
+        SecretSession session = sessions.get(userId);
+        try {
+            String response = client().post()
+                    .uri(session.baseUrl() + "/chat/completions")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + session.apiKey())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of(
+                            "model", session.modelName(),
+                            "messages", messages,
+                            "temperature", 0,
+                            "response_format", Map.of("type", "json_object")
+                    ))
+                    .retrieve()
+                    .body(String.class);
+            JsonNode root = JsonSupport.readTree(response);
+            JsonNode content = root.path("choices").path(0).path("message").path("content");
+            if (!content.isTextual() || content.asText().isBlank()) throw new AuthenticationException("Model response format error.");
+            return content.asText();
+        } catch (HttpClientErrorException e) {
+            if (e.getStatusCode().value() == 401) throw new AuthenticationException("API Key invalid.");
+            if (e.getStatusCode().value() == 402) throw new AuthenticationException("API balance is insufficient.");
+            if (e.getStatusCode().value() == 429) throw new AuthenticationException("Rate limit from provider.");
+            throw new AuthenticationException("Provider rejected the API request: HTTP " + e.getStatusCode().value());
+        } catch (ResourceAccessException e) {
+            throw new AuthenticationException("Network error or provider timeout.");
+        }
+    }
+
     private void validate(AiProviderSettings settings, String apiKey) {
         try {
-            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-            requestFactory.setConnectTimeout(Duration.ofSeconds(10));
-            requestFactory.setReadTimeout(Duration.ofSeconds(30));
-            RestClient restClient = RestClient.builder().requestFactory(requestFactory).build();
-            restClient.post()
+            client().post()
                     .uri(settings.getBaseUrl() + "/chat/completions")
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of(
                             "model", settings.getModelName(),
-                            "messages", new Object[]{Map.of("role", "user", "content", "Respond with OK.")},
+                            "messages", List.of(Map.of("role", "user", "content", "Respond with OK.")),
                             "max_tokens", 2
                     ))
                     .retrieve()
@@ -89,6 +117,19 @@ public class ApiKeySessionServiceImpl implements ApiKeySessionService {
         } catch (Exception e) {
             throw new AuthenticationException("Provider unavailable or model response format error.");
         }
+    }
+
+    private RestClient client() {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofSeconds(10));
+        requestFactory.setReadTimeout(Duration.ofSeconds(60));
+        return RestClient.builder().requestFactory(requestFactory).build();
+    }
+
+    private String normalizeBaseUrl(String baseUrl) {
+        String value = baseUrl == null ? "" : baseUrl.trim();
+        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
+        return value;
     }
 
     private String name(AiProviderSettings settings) { return settings == null ? null : settings.getProviderName(); }

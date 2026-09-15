@@ -1,0 +1,5 @@
+username,role,account_status,mfa_enabled,severity,remediation_days,region
+Neil,admin,active,false,critical,45,US
+Bob,user,active,true,medium,12,EU
+Alice,admin,inactive,false,critical,20,UK
+Mia,admin,active,true,critical,29,EU

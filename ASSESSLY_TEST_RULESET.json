@@ -1,0 +1,63 @@
+{
+  "rules": [
+    {
+      "id": "IAM-04-admin-mfa",
+      "fieldsUsed": ["role", "account_status", "mfa_enabled"],
+      "sourceControl": {
+        "controlId": "IAM-04",
+        "text": "Administrative accounts must use MFA."
+      },
+      "explanation": "Active administrative accounts are identified by role and account_status, then mfa_enabled must be true.",
+      "ast": {
+        "type": "if",
+        "if": {
+          "type": "and",
+          "children": [
+            {
+              "type": "condition",
+              "field": "role",
+              "operator": "=",
+              "value": "admin"
+            },
+            {
+              "type": "condition",
+              "field": "account_status",
+              "operator": "=",
+              "value": "active"
+            }
+          ]
+        },
+        "then": {
+          "type": "condition",
+          "field": "mfa_enabled",
+          "operator": "=",
+          "value": true
+        }
+      }
+    },
+    {
+      "id": "VM-01-critical-remediation",
+      "fieldsUsed": ["severity", "remediation_days"],
+      "sourceControl": {
+        "controlId": "VM-01",
+        "text": "Critical vulnerabilities must be remediated within 30 days."
+      },
+      "explanation": "Critical findings are selected by severity, then remediation_days must be less than or equal to 30.",
+      "ast": {
+        "type": "if",
+        "if": {
+          "type": "condition",
+          "field": "severity",
+          "operator": "=",
+          "value": "critical"
+        },
+        "then": {
+          "type": "condition",
+          "field": "remediation_days",
+          "operator": "<=",
+          "value": 30
+        }
+      }
+    }
+  ]
+}

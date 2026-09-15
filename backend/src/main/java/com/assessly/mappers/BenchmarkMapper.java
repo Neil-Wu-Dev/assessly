@@ -13,6 +13,7 @@ public class BenchmarkMapper {
                 result.getTotalCases(),
                 result.getCorrectCases(),
                 result.getAccuracy(),
+                result.getAiGeneratedRuleJson(),
                 result.getGeneratedExecutionJson(),
                 result.getGroundTruthExecutionJson(),
                 result.getDifferences()

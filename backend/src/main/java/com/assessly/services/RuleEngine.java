@@ -20,6 +20,15 @@ public class RuleEngine {
         });
     }
 
+    public void validateFields(String rulesJson, Set<String> availableFields) {
+        Set<String> requiredFields = RuleFieldExtractor.fields(rulesJson);
+        Set<String> missing = new LinkedHashSet<>(requiredFields);
+        missing.removeAll(availableFields);
+        if (!missing.isEmpty()) {
+            throw new RuleValidationException("Schema mismatch: rule references missing field(s): " + String.join(", ", missing));
+        }
+    }
+
     public Map<String, Object> evaluate(String rulesJson, List<Map<String, Object>> rows) {
         JsonNode rules = JsonSupport.readTree(rulesJson).get("rules");
         List<Map<String, Object>> violations = new ArrayList<>();
@@ -31,6 +40,7 @@ public class RuleEngine {
                     violations.add(Map.of(
                             "recordIndex", recordIndex,
                             "actualRecord", row,
+                            "fieldsUsed", rule.path("fieldsUsed"),
                             "machineRule", rule,
                             "sourceControl", rule.get("sourceControl"),
                             "expected", "Rule expression evaluates to true"

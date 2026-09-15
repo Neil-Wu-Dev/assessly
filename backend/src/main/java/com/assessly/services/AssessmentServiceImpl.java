@@ -13,8 +13,10 @@ import com.assessly.services.interfaces.EvidenceService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -38,6 +40,8 @@ public class AssessmentServiceImpl implements AssessmentService {
         EvidenceFile evidenceFile = evidence.get(ownerId, datasetId, evidenceFileId);
         RuleSet ruleSet = ruleSets.findByIdAndDataset(ruleSetId, datasetId).orElseThrow();
         if (!ruleSet.isExecutable()) throw new RuleValidationException("Rule Set is not confirmed or executable.");
+        ruleEngine.validateRuleSet(ruleSet.getRulesJson());
+        ruleEngine.validateFields(ruleSet.getRulesJson(), fieldsFromColumns(evidenceFile.getColumnsJson()));
         List<Map<String, Object>> rows = JsonSupport.read(evidenceFile.getRowsJson(), new TypeReference<>() {});
         Map<String, Object> result = ruleEngine.evaluate(ruleSet.getRulesJson(), rows);
         return assessments.save(new AssessmentRun(datasetId, ruleSet.getId(), evidenceFile.getId(), AssessmentStatus.COMPLETED, (int) result.get("recordsEvaluated"), (int) result.get("rulesEvaluated"), (int) result.get("violationsDetected"), JsonSupport.write(result)));
@@ -46,5 +50,15 @@ public class AssessmentServiceImpl implements AssessmentService {
     public List<AssessmentRun> history(UUID ownerId, UUID datasetId) {
         datasets.get(ownerId, datasetId);
         return assessments.findByDataset(datasetId);
+    }
+
+    private Set<String> fieldsFromColumns(String columnsJson) {
+        List<Map<String, Object>> columns = JsonSupport.read(columnsJson, new TypeReference<>() {});
+        Set<String> fields = new LinkedHashSet<>();
+        for (Map<String, Object> column : columns) {
+            Object name = column.get("name");
+            if (name != null) fields.add(String.valueOf(name));
+        }
+        return fields;
     }
 }

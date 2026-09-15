@@ -13,8 +13,9 @@ type RuleSet = { id: string; datasetId: string; version: number; status: string;
 type Assessment = { id: string; datasetId: string; ruleSetId: string; evidenceFileId: string; status: string; recordsEvaluated: number; rulesEvaluated: number; violationsDetected: number; resultJson: string; createdAt: string }
 type Detail = { dataset: Dataset; evidenceFiles: Evidence[]; controlDocuments: Control[]; ruleSets: RuleSet[]; assessmentRuns: Assessment[] }
 type ApiSession = { status: string; providerName?: string; baseUrl?: string; modelName?: string; expiresAt?: string; remainingSeconds: number; message: string }
-type BenchmarkResult = { structurallyEquivalent: boolean; executionEquivalent: boolean; totalCases: number; correctCases: number; accuracy: number; generatedExecutionJson: string; groundTruthExecutionJson: string; differences: { type: string; message: string }[] }
+type BenchmarkResult = { structurallyEquivalent: boolean; executionEquivalent: boolean; totalCases: number; correctCases: number; accuracy: number; aiGeneratedRuleJson: string; generatedExecutionJson: string; groundTruthExecutionJson: string; differences: { type: string; message: string }[] }
 type BenchmarkCase = { id: string; name: string; controlText: string; testDataJson: string; groundTruthRuleJson: string; expectedResultJson: string }
+type GeneratedRule = { id?: string; fieldsUsed?: string[]; sourceControl?: { controlId?: string; text?: string }; explanation?: string; ast?: unknown }
 
 const navItems: { id: Page; label: string }[] = [
   { id: 'ai', label: 'AI Provider' },
@@ -55,7 +56,7 @@ function App() {
 
   useEffect(() => {
     if (detail?.evidenceFiles[0] && !selectedEvidenceId) setSelectedEvidenceId(detail.evidenceFiles[0].id)
-    if (detail?.ruleSets[0] && !selectedRuleSetId) setSelectedRuleSetId(detail.ruleSets[0].id)
+    if (!selectedRuleSetId) setSelectedRuleSetId(detail?.ruleSets.find(isExecutableRuleSet)?.id ?? '')
   }, [detail, selectedEvidenceId, selectedRuleSetId])
 
   async function checkBackend() {
@@ -139,7 +140,7 @@ function App() {
       setActiveId(id)
       setDetail(data)
       setSelectedEvidenceId(data.evidenceFiles[0]?.id ?? '')
-      setSelectedRuleSetId(data.ruleSets[0]?.id ?? '')
+      setSelectedRuleSetId(data.ruleSets.find(isExecutableRuleSet)?.id ?? '')
     } catch (error) {
       setMessage((error as Error).message)
     }
@@ -339,13 +340,40 @@ function EvidencePage(props: { detail: Detail; rows: Record<string, unknown>[]; 
 }
 
 function RulesPage(props: { detail: Detail; apiSession: ApiSession; manualRule: string; setManualRule: (value: string) => void; generateRules: () => void; saveManualRules: () => void; confirmRuleSet: (id: string) => void }) {
+  const columns = parseJsonArray(props.detail.evidenceFiles[0]?.columnsJson) as { name: string; type?: string }[]
+  const fields = columns.map((column) => column.name).filter(Boolean)
+  const firstControl = props.detail.controlDocuments[0]
   const canGenerate = props.detail.controlDocuments.length > 0 && props.detail.evidenceFiles.length > 0 && props.apiSession.status === 'CONNECTED'
-  return <section className="page"><PageHeader eyebrow="Page 4" title="AI Rule Blocks and Visual Builder" subtitle="Select uploaded controls and evidence context, generate constrained rule AST, review, edit, and confirm." /><div className="rule-layout"><div className="card form-stack"><h2>Generation Inputs</h2><label>AI Session<StatusPill value={props.apiSession.status} /></label><label>Security Control{props.detail.controlDocuments.length ? <select>{props.detail.controlDocuments.map((control) => <option key={control.id}>{control.title || control.filename}</option>)}</select> : <EmptyState title="No controls available" body="Upload Security Control documents before asking AI to generate rule blocks." />}</label><label>Evidence Schema{props.detail.evidenceFiles.length ? <select>{props.detail.evidenceFiles.map((file) => <option key={file.id}>{file.filename}</option>)}</select> : <EmptyState title="No evidence available" body="Upload structured evidence so rule generation can compare controls against real fields." />}</label><button className="primary" disabled={!canGenerate} onClick={props.generateRules}>Generate Rule Blocks</button><div className="builder-row"><select><option>IF</option><option>AND</option><option>OR</option><option>NOT</option></select><select><option>role</option><option>mfa_enabled</option></select><select><option>=</option><option>IN</option><option>CONTAINS</option></select><input defaultValue="admin" /></div><textarea className="code-editor" value={props.manualRule} onChange={(event) => props.setManualRule(event.target.value)} /><button onClick={props.saveManualRules}>Save Manual Rule Set</button></div><div className="card"><h2>Rule Sets</h2>{props.detail.ruleSets.length ? <div className="records vertical">{props.detail.ruleSets.map((ruleSet) => <article key={ruleSet.id}><div className="record-header"><strong>Version {ruleSet.version}</strong><StatusPill value={ruleSet.status} /></div><span>{ruleSet.confirmedAt ? `Confirmed ${new Date(ruleSet.confirmedAt).toLocaleString()}` : 'Not confirmed'}</span><pre>{pretty(ruleSet.rulesJson)}</pre><button onClick={() => props.confirmRuleSet(ruleSet.id)}>Confirm Rule Set</button></article>)}</div> : <EmptyState title="No rule sets yet" body="Generate rules with a connected AI provider or save a manual rule set from the builder." />}</div></div></section>
+  const canBuildManually = fields.length > 0 && Boolean(firstControl)
+
+  function buildManualRule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const ifField = String(form.get('ifField') ?? '')
+    const thenField = String(form.get('thenField') ?? '')
+    const rule = {
+      rules: [{
+        id: `manual-${Date.now()}`,
+        fieldsUsed: [ifField, thenField].filter(Boolean),
+        sourceControl: { controlId: controlIdFrom(firstControl), text: firstControl?.fullText ?? '' },
+        explanation: `Rows matching ${ifField} ${form.get('ifOperator')} ${form.get('ifValue')} must satisfy ${thenField} ${form.get('thenOperator')} ${form.get('thenValue')}.`,
+        ast: {
+          type: 'if',
+          if: { type: 'condition', field: ifField, operator: form.get('ifOperator'), value: typedValue(String(form.get('ifValue') ?? '')) },
+          then: { type: 'condition', field: thenField, operator: form.get('thenOperator'), value: typedValue(String(form.get('thenValue') ?? '')) },
+        },
+      }],
+    }
+    props.setManualRule(JSON.stringify(rule, null, 2))
+  }
+
+  return <section className="page"><PageHeader eyebrow="Page 4" title="AI Rule Blocks and Visual Builder" subtitle="Generate constrained rule AST from uploaded controls and evidence, or build one manually without editing raw JSON." /><div className="rule-layout"><div className="card form-stack"><h2>AI Generation</h2><label>AI Session<StatusPill value={props.apiSession.status} /></label><label>Security Control{props.detail.controlDocuments.length ? <select>{props.detail.controlDocuments.map((control) => <option key={control.id}>{control.title || control.filename}</option>)}</select> : <EmptyState title="No controls available" body="Upload Security Control documents before asking AI to generate rule blocks." />}</label><label>Evidence Schema{props.detail.evidenceFiles.length ? <select>{props.detail.evidenceFiles.map((file) => <option key={file.id}>{file.filename}</option>)}</select> : <EmptyState title="No evidence available" body="Upload structured evidence so rule generation can compare controls against real fields." />}</label><button className="primary" disabled={!canGenerate} onClick={props.generateRules}>Generate Rule Blocks</button><h2>Visual Rule Builder</h2>{canBuildManually ? <form className="visual-builder" onSubmit={buildManualRule}><div className="builder-row"><strong>IF</strong><select name="ifField">{fields.map((field) => <option key={field}>{field}</option>)}</select><select name="ifOperator"><option>=</option><option>!=</option><option>IN</option><option>NOT IN</option><option>CONTAINS</option><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option></select><input name="ifValue" placeholder="value" /></div><div className="builder-row"><strong>THEN</strong><select name="thenField">{fields.map((field) => <option key={field}>{field}</option>)}</select><select name="thenOperator"><option>=</option><option>!=</option><option>IN</option><option>NOT IN</option><option>CONTAINS</option><option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option></select><input name="thenValue" placeholder="expected value" /></div><button>Build Rule JSON</button></form> : <EmptyState title="Manual builder is not ready" body="Upload at least one control document and one structured evidence file so the builder has source text and field names." />}<h2>Auditable Rule JSON</h2><textarea className="code-editor" value={props.manualRule} onChange={(event) => props.setManualRule(event.target.value)} /><button onClick={props.saveManualRules}>Save Rule Set</button></div><div className="card"><h2>Rule Review</h2>{props.detail.ruleSets.length ? <div className="records vertical">{props.detail.ruleSets.map((ruleSet) => <article key={ruleSet.id}><div className="record-header"><strong>Version {ruleSet.version}</strong><StatusPill value={ruleSet.status} /></div><span>{ruleSet.confirmedAt ? `Confirmed ${new Date(ruleSet.confirmedAt).toLocaleString()}` : 'Not confirmed'}</span><RuleReview rulesJson={ruleSet.rulesJson} /><pre>{pretty(ruleSet.generationSummaryJson)}</pre><button disabled={ruleSet.status !== 'READY' || Boolean(ruleSet.confirmedAt)} onClick={() => props.confirmRuleSet(ruleSet.id)}>Confirm Rule Set</button></article>)}</div> : <EmptyState title="No rule sets yet" body="Generate rules with a connected AI provider or save a manual rule set from the builder." />}</div></div></section>
 }
 
 function AssessmentPage(props: { detail: Detail; selectedEvidenceId: string; setSelectedEvidenceId: (value: string) => void; selectedRuleSetId: string; setSelectedRuleSetId: (value: string) => void; startAssessment: () => void }) {
-  const canAssess = Boolean(props.selectedEvidenceId && props.selectedRuleSetId)
-  return <section className="page"><PageHeader eyebrow="Page 5" title="Start Security Assessment" subtitle="The Java rule engine evaluates confirmed machine rules against selected structured evidence. AI is not called here." />{canAssess ? <div className="card form-grid"><label>Evidence file<select value={props.selectedEvidenceId} onChange={(event) => props.setSelectedEvidenceId(event.target.value)}>{props.detail.evidenceFiles.map((file) => <option key={file.id} value={file.id}>{file.filename}</option>)}</select></label><label>Rule Set<select value={props.selectedRuleSetId} onChange={(event) => props.setSelectedRuleSetId(event.target.value)}>{props.detail.ruleSets.map((rule) => <option key={rule.id} value={rule.id}>Version {rule.version} · {rule.status}</option>)}</select></label><button className="primary" onClick={props.startAssessment}>Start Assessment</button></div> : <EmptyState title="Assessment is not ready" body="Upload evidence and create or confirm a rule set before starting deterministic assessment." />}<div className="card metrics"><Metric label="Available evidence" value={props.detail.evidenceFiles.length} /><Metric label="Available rule sets" value={props.detail.ruleSets.length} /><Metric label="Previous runs" value={props.detail.assessmentRuns.length} /></div></section>
+  const executableRules = props.detail.ruleSets.filter(isExecutableRuleSet)
+  const canAssess = Boolean(props.selectedEvidenceId && props.detail.evidenceFiles.length && executableRules.length)
+  return <section className="page"><PageHeader eyebrow="Page 5" title="Start Security Assessment" subtitle="The Java rule engine evaluates confirmed machine rules against selected structured evidence. AI is not called here." />{canAssess ? <div className="card form-grid"><label>Evidence file<select value={props.selectedEvidenceId} onChange={(event) => props.setSelectedEvidenceId(event.target.value)}>{props.detail.evidenceFiles.map((file) => <option key={file.id} value={file.id}>{file.filename}</option>)}</select></label><label>Confirmed Rule Set<select value={props.selectedRuleSetId} onChange={(event) => props.setSelectedRuleSetId(event.target.value)}>{executableRules.map((rule) => <option key={rule.id} value={rule.id}>Version {rule.version} · confirmed</option>)}</select></label><button className="primary" onClick={props.startAssessment}>Start Assessment</button></div> : <EmptyState title="Assessment is not ready" body="Upload evidence and confirm a READY rule set before starting deterministic assessment." />}<div className="card metrics"><Metric label="Available evidence" value={props.detail.evidenceFiles.length} /><Metric label="Confirmed rule sets" value={executableRules.length} /><Metric label="Previous runs" value={props.detail.assessmentRuns.length} /></div></section>
 }
 
 function HistoryPage({ runs }: { runs: Assessment[] }) {
@@ -353,9 +381,14 @@ function HistoryPage({ runs }: { runs: Assessment[] }) {
 }
 
 function BenchmarkPage({ cases, refreshCases, runBenchmark, result }: { cases: BenchmarkCase[]; refreshCases: () => void; runBenchmark: (event: FormEvent<HTMLFormElement>) => void; result: BenchmarkResult | null }) {
-  return <section className="page"><PageHeader eyebrow="Page 6" title="AI Reliability Benchmark" subtitle="Run structural AST comparison and deterministic rule-engine execution comparison against human ground truth." /><div className="benchmark-grid"><form className="card form-stack" onSubmit={runBenchmark}><h2>Custom Case</h2><label>Control text<textarea name="controlText" defaultValue="Administrative accounts must use MFA." /></label><label>Test data<textarea name="testDataJson" defaultValue='[{"role":"admin","mfa_enabled":false},{"role":"user","mfa_enabled":true}]' /></label><label>Ground-truth rule<textarea name="groundTruthRuleJson" defaultValue={sampleRule} /></label><label>AI generated rule<textarea name="aiGeneratedRuleJson" defaultValue={sampleRule} /></label><label>Expected result<textarea name="expectedResultJson" placeholder="Optional: paste expected assessment result JSON. Leave blank to execute ground-truth rule." /></label><button className="primary">Run Benchmark Case</button></form><div className="card"><div className="record-header"><h2>Built-in Cases</h2><button onClick={refreshCases}>Reload Cases</button></div>{cases.length ? <div className="records vertical">{cases.map((item) => <article key={item.id}><strong>{item.name}</strong><span>{item.id}</span><p>{item.controlText}</p></article>)}</div> : <EmptyState title="No built-in cases loaded" body="Use Reload Cases to fetch benchmark cases from the backend." />}<h2>Reliability Results</h2><div className="metrics"><Metric label="Total cases" value={result?.totalCases ?? 0} /><Metric label="Accuracy" value={result ? `${Math.round(result.accuracy * 100)}%` : '--'} /><Metric label="AST equivalent" value={result ? (result.structurallyEquivalent ? 'Yes' : 'No') : '--'} /><Metric label="Execution equivalent" value={result ? (result.executionEquivalent ? 'Yes' : 'No') : '--'} /></div>{result ? <div className="records vertical"><article><div className="record-header"><strong>Differences</strong><StatusPill value={result.differences.length ? 'ERROR' : 'PASS'} /></div>{result.differences.length ? result.differences.map((item) => <p key={item.type}>{item.type}: {item.message}</p>) : <p>No reliability difference detected.</p>}</article><article><strong>Generated execution</strong><pre>{pretty(result.generatedExecutionJson)}</pre></article><article><strong>Ground-truth execution</strong><pre>{pretty(result.groundTruthExecutionJson)}</pre></article></div> : <div className="empty-box">Run a benchmark case to see reliability metrics.</div>}</div></div></section>
+  return <section className="page"><PageHeader eyebrow="Page 6" title="AI Reliability Benchmark" subtitle="Run structural AST comparison and deterministic rule-engine execution comparison against human ground truth." /><div className="benchmark-grid"><form className="card form-stack" onSubmit={runBenchmark}><h2>Custom Case</h2><label>Control text<textarea name="controlText" defaultValue="Administrative accounts must use MFA." /></label><label>Test data<textarea name="testDataJson" defaultValue='[{"role":"admin","mfa_enabled":false},{"role":"user","mfa_enabled":true}]' /></label><label>Ground-truth rule<textarea name="groundTruthRuleJson" defaultValue={sampleRule} /></label><label>AI generated rule<textarea name="aiGeneratedRuleJson" placeholder="Optional. Leave blank to generate with the connected AI provider." /></label><label>Expected result<textarea name="expectedResultJson" placeholder="Optional: paste expected assessment result JSON. Leave blank to execute ground-truth rule." /></label><button className="primary">Run Benchmark Case</button></form><div className="card"><div className="record-header"><h2>Built-in Cases</h2><button onClick={refreshCases}>Reload Cases</button></div>{cases.length ? <div className="records vertical">{cases.map((item) => <article key={item.id}><strong>{item.name}</strong><span>{item.id}</span><p>{item.controlText}</p></article>)}</div> : <EmptyState title="No built-in cases loaded" body="Use Reload Cases to fetch benchmark cases from the backend." />}<h2>Reliability Results</h2><div className="metrics"><Metric label="Total cases" value={result?.totalCases ?? 0} /><Metric label="Accuracy" value={result ? `${Math.round(result.accuracy * 100)}%` : '--'} /><Metric label="AST equivalent" value={result ? (result.structurallyEquivalent ? 'Yes' : 'No') : '--'} /><Metric label="Execution equivalent" value={result ? (result.executionEquivalent ? 'Yes' : 'No') : '--'} /></div>{result ? <div className="records vertical"><article><div className="record-header"><strong>Differences</strong><StatusPill value={result.differences.length ? 'ERROR' : 'PASS'} /></div>{result.differences.length ? result.differences.map((item) => <p key={item.type}>{item.type}: {item.message}</p>) : <p>No reliability difference detected.</p>}</article><article><strong>AI generated rule</strong><pre>{pretty(result.aiGeneratedRuleJson)}</pre></article><article><strong>Generated execution</strong><pre>{pretty(result.generatedExecutionJson)}</pre></article><article><strong>Ground-truth execution</strong><pre>{pretty(result.groundTruthExecutionJson)}</pre></article></div> : <div className="empty-box">Run a benchmark case to see reliability metrics.</div>}</div></div></section>
 }
 
+function RuleReview({ rulesJson }: { rulesJson: string }) {
+  const rules = parseRules(rulesJson)
+  if (!rules.length) return <EmptyState title="No executable rules" body="This Rule Set has no executable rule entries. Check its status and generation summary." />
+  return <div className="rule-review">{rules.map((rule, index) => <div key={rule.id ?? index} className="rule-card"><div><span>Fields Used</span><strong>{rule.fieldsUsed?.join(', ') || 'Not specified'}</strong></div><div><span>Generated Rule</span><code>{ruleText(rule.ast)}</code></div><div><span>Source Control</span><p>{rule.sourceControl?.controlId ?? 'Unknown'} · {rule.sourceControl?.text ?? 'No source text'}</p></div><div><span>Explanation</span><p>{rule.explanation ?? 'No explanation provided.'}</p></div></div>)}</div>
+}
 function ApiCoveragePage() {
   const endpoints = ['GET /api/v1/health', 'POST /api/v1/auth/register', 'POST /api/v1/auth/login', 'POST /api/v1/auth/ai-session', 'GET /api/v1/auth/ai-session', 'POST /api/v1/datasets', 'GET /api/v1/datasets', 'GET /api/v1/datasets/{datasetId}', 'DELETE /api/v1/datasets/{datasetId}', 'POST /api/v1/datasets/{datasetId}/controls', 'POST /api/v1/datasets/{datasetId}/evidence', 'DELETE /api/v1/datasets/{datasetId}/evidence/{evidenceId}', 'POST /api/v1/datasets/{datasetId}/rules/generate', 'POST /api/v1/datasets/{datasetId}/rules/manual', 'POST /api/v1/datasets/{datasetId}/rules/{ruleSetId}/confirm', 'POST /api/v1/datasets/{datasetId}/assessments', 'GET /api/v1/benchmarks/cases', 'POST /api/v1/benchmarks/run']
   return <section className="page"><PageHeader eyebrow="API" title="Backend API Coverage" subtitle="Every currently implemented backend endpoint has a visible frontend entry or status here." /><div className="card endpoint-list">{endpoints.map((endpoint) => <div key={endpoint}><code>{endpoint}</code><StatusPill value="WIRED" /></div>)}</div></section>
@@ -396,6 +429,41 @@ function DataPreview({ rows }: { rows: Record<string, unknown>[] }) {
   return <div className="table-wrap"><table><thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column}>{String(row[column] ?? '')}</td>)}</tr>)}</tbody></table></div>
 }
 
+function isExecutableRuleSet(rule: RuleSet) {
+  return rule.status === 'READY' && Boolean(rule.confirmedAt)
+}
+function parseRules(json: string): GeneratedRule[] {
+  try {
+    const root = JSON.parse(json)
+    return Array.isArray(root?.rules) ? root.rules : []
+  } catch {
+    return []
+  }
+}
+
+function ruleText(ast: unknown): string {
+  if (!ast || typeof ast !== 'object') return 'Invalid rule AST'
+  const node = ast as Record<string, unknown>
+  if (node.type === 'condition') return `${node.field} ${node.operator} ${JSON.stringify(node.value)}`
+  if (node.type === 'if') return `IF ${ruleText(node.if)} THEN ${ruleText(node.then)}${node.else ? ` ELSE ${ruleText(node.else)}` : ''}`
+  if (node.type === 'and' || node.type === 'or') return (node.children as unknown[] ?? []).map(ruleText).join(` ${String(node.type).toUpperCase()} `)
+  if (node.type === 'not') return `NOT (${ruleText(node.child)})`
+  return 'Unsupported rule AST'
+}
+
+function typedValue(value: string): string | number | boolean | string[] {
+  const trimmed = value.trim()
+  if (trimmed === 'true') return true
+  if (trimmed === 'false') return false
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed)
+  if (trimmed.includes(',')) return trimmed.split(',').map((item) => item.trim()).filter(Boolean)
+  return trimmed
+}
+
+function controlIdFrom(control?: Control) {
+  const match = control?.fullText.match(/\b[A-Z]{2,8}[-_ ]?\d{1,4}\b/)
+  return match?.[0]?.replace(' ', '-') ?? control?.title ?? 'MANUAL'
+}
 function parseJsonArray(json?: string) {
   try { return json ? JSON.parse(json) : [] } catch { return [] }
 }
